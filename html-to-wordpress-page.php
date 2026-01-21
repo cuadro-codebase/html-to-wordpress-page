@@ -273,7 +273,15 @@ class HTML_To_WordPress_Page {
             <h1><?php echo $page_id ? 'Edit HTML Page' : 'Add New HTML Page'; ?></h1>
 
             <?php if ($message): ?>
-                <div class="notice notice-success"><p><?php echo esc_html($message); ?></p></div>
+                <div class="notice notice-success">
+                    <p>
+                        <?php if (isset($_GET['created']) && $page): ?>
+                            Page created successfully. URL: <a href="<?php echo esc_url(home_url('/html/' . $page->slug)); ?>" target="_blank"><?php echo esc_html(home_url('/html/' . $page->slug)); ?></a>
+                        <?php else: ?>
+                            <?php echo esc_html($message); ?>
+                        <?php endif; ?>
+                    </p>
+                </div>
             <?php endif; ?>
 
             <?php if ($error): ?>
