@@ -32,21 +32,27 @@ class HTML_To_WordPress_Page {
     public function activate() {
         global $wpdb;
 
+        $table_name = $wpdb->prefix . 'html_pages';
         $charset_collate = $wpdb->get_charset_collate();
 
-        $sql = "CREATE TABLE IF NOT EXISTS {$this->table_name} (
-            id bigint(20) NOT NULL AUTO_INCREMENT,
-            title varchar(255) NOT NULL,
-            slug varchar(255) NOT NULL UNIQUE,
-            html_content longtext NOT NULL,
-            created_at datetime DEFAULT CURRENT_TIMESTAMP,
-            updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            KEY slug (slug)
-        ) $charset_collate;";
+        // Check if table exists
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$table_name}'") === $table_name;
 
-        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
-        dbDelta($sql);
+        if (!$table_exists) {
+            $sql = "CREATE TABLE {$table_name} (
+                id bigint(20) NOT NULL AUTO_INCREMENT,
+                title varchar(255) NOT NULL,
+                slug varchar(255) NOT NULL,
+                html_content longtext NOT NULL,
+                created_at datetime DEFAULT CURRENT_TIMESTAMP,
+                updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (id),
+                UNIQUE KEY slug (slug)
+            ) {$charset_collate};";
+
+            require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+            dbDelta($sql);
+        }
 
         $this->register_rewrite_rules();
         flush_rewrite_rules();
