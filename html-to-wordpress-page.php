@@ -2,7 +2,7 @@
 /**
  * Plugin Name: HTML to WordPress Page
  * Description: Create standalone HTML pages without WordPress theme header/footer. Perfect for uploading AI-generated HTML.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: Cuadro Srl
  * Author URI: https://cuadrostudio.com
  * License: GPL v2 or later
