@@ -261,41 +261,32 @@ class HTML_To_WordPress_Page {
                                 $error = 'Database error: ' . $wpdb->last_error;
                             } else {
                                 $page_id = $wpdb->insert_id;
-
-                                // Redirect to edit page
-                                wp_redirect(admin_url('admin.php?page=html-to-wp-page-new&id=' . $page_id . '&created=1'));
-                                exit;
+                                $message = 'created';
                             }
                         }
 
                         // Reload page data
-                        $page = $wpdb->get_row($wpdb->prepare(
-                            "SELECT * FROM {$this->table_name} WHERE id = %d",
-                            $page_id
-                        ));
+                        if ($page_id) {
+                            $page = $wpdb->get_row($wpdb->prepare(
+                                "SELECT * FROM {$this->table_name} WHERE id = %d",
+                                $page_id
+                            ));
+                        }
                     }
                 }
             }
-        }
-
-        if (isset($_GET['created'])) {
-            $message = 'Page created successfully.';
         }
 
         ?>
         <div class="wrap">
             <h1><?php echo $page_id ? 'Edit HTML Page' : 'Add New HTML Page'; ?></h1>
 
-            <?php if ($message): ?>
+            <?php if ($message === 'created' && $page): ?>
                 <div class="notice notice-success">
-                    <p>
-                        <?php if (isset($_GET['created']) && $page): ?>
-                            Page created successfully. URL: <a href="<?php echo esc_url(home_url('/html/' . $page->slug)); ?>" target="_blank"><?php echo esc_html(home_url('/html/' . $page->slug)); ?></a>
-                        <?php else: ?>
-                            <?php echo esc_html($message); ?>
-                        <?php endif; ?>
-                    </p>
+                    <p>Page created successfully. URL: <a href="<?php echo esc_url(home_url('/html/' . $page->slug)); ?>" target="_blank"><?php echo esc_html(home_url('/html/' . $page->slug)); ?></a></p>
                 </div>
+            <?php elseif ($message): ?>
+                <div class="notice notice-success"><p><?php echo esc_html($message); ?></p></div>
             <?php endif; ?>
 
             <?php if ($error): ?>
