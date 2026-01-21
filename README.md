@@ -36,3 +36,8 @@ A WordPress plugin that allows you to create standalone HTML pages without the W
 ## License
 
 GPL v2 or later
+
+## Author
+
+**Cuadro Srl**
+Website: [cuadrostudio.com](https://cuadrostudio.com)
