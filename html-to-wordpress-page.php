@@ -237,21 +237,29 @@ class HTML_To_WordPress_Page {
                             );
                             $message = 'Page updated successfully.';
                         } else {
+                            // Ensure table exists
+                            $this->activate();
+
                             // Insert new
-                            $wpdb->insert(
+                            $result = $wpdb->insert(
                                 $this->table_name,
                                 array(
                                     'title' => $title,
                                     'slug' => $slug,
                                     'html_content' => $html_content
-                                )
+                                ),
+                                array('%s', '%s', '%s')
                             );
-                            $page_id = $wpdb->insert_id;
-                            $message = 'Page created successfully.';
 
-                            // Redirect to edit page
-                            wp_redirect(admin_url('admin.php?page=html-to-wp-page-new&id=' . $page_id . '&created=1'));
-                            exit;
+                            if ($result === false) {
+                                $error = 'Database error: ' . $wpdb->last_error;
+                            } else {
+                                $page_id = $wpdb->insert_id;
+
+                                // Redirect to edit page
+                                wp_redirect(admin_url('admin.php?page=html-to-wp-page-new&id=' . $page_id . '&created=1'));
+                                exit;
+                            }
                         }
 
                         // Reload page data
