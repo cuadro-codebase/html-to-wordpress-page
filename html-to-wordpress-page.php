@@ -213,9 +213,9 @@ class HTML_To_WordPress_Page {
         // Handle form submission
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['html_wp_nonce'])) {
             if (wp_verify_nonce($_POST['html_wp_nonce'], 'html_wp_save')) {
-                $title = sanitize_text_field($_POST['title']);
-                $slug = sanitize_title($_POST['slug']);
-                $html_content = $_POST['html_content']; // Don't sanitize HTML content
+                $title = sanitize_text_field(wp_unslash($_POST['title']));
+                $slug = sanitize_title(wp_unslash($_POST['slug']));
+                $html_content = wp_unslash($_POST['html_content']); // Remove magic quotes, don't sanitize HTML
 
                 if (empty($title) || empty($slug) || empty($html_content)) {
                     $error = 'Please fill in all fields.';
