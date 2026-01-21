@@ -1,0 +1,54 @@
+/* HTML to WordPress Page Admin Styles */
+
+.html-wp-page-url {
+    background: #f0f6fc;
+    border: 1px solid #c3c4c7;
+    border-left: 4px solid #2271b1;
+    padding: 12px 15px;
+    margin: 15px 0;
+    font-size: 14px;
+}
+
+.html-wp-page-url a {
+    text-decoration: none;
+    font-family: monospace;
+    font-size: 13px;
+}
+
+.html-wp-page-url a:hover {
+    text-decoration: underline;
+}
+
+#html_content {
+    font-family: 'Courier New', Consolas, Monaco, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    tab-size: 2;
+    resize: vertical;
+    min-height: 400px;
+}
+
+#html-file-input {
+    padding: 8px 0;
+}
+
+#slug-preview {
+    color: #2271b1;
+    font-weight: 500;
+}
+
+.form-table th {
+    width: 150px;
+}
+
+.wp-list-table code {
+    background: #f0f0f1;
+    padding: 2px 6px;
+    border-radius: 3px;
+}
+
+/* Drag and drop zone styling */
+#html_content.drag-over {
+    border: 2px dashed #2271b1;
+    background: #f0f6fc;
+}
