@@ -2,10 +2,12 @@
 /**
  * Plugin Name: HTML to WordPress Page
  * Description: Create standalone HTML pages without WordPress theme header/footer. Perfect for uploading AI-generated HTML.
- * Version: 2.3.0
- * Author: Cuadro Srl
- * Author URI: https://cuadrostudio.com
+ * Version: 2.4.0
+ * Author: Cuadro Studio
+ * Author URI: https://www.cuadrostudio.com
  * License: GPL v2 or later
+ * Requires PHP: 7.4
+ * Requires at least: 5.0
  */
 
 if (!defined('ABSPATH')) {
@@ -58,7 +60,7 @@ class HTML_To_WordPress_Page {
      * Check if migration needs to run (for plugin updates)
      */
     public function check_migration() {
-        $current_version = '2.3.0';
+        $current_version = '2.4.0';
         $installed_version = get_option('html_to_wp_page_version', '0');
 
         if (version_compare($installed_version, $current_version, '<')) {
@@ -631,7 +633,7 @@ class HTML_To_WordPress_Page {
                     'html-to-wp-page-admin',
                     plugin_dir_url(__FILE__) . 'admin-style.css',
                     array(),
-                    '2.3.0'
+                    '2.4.0'
                 );
                 return;
             }
@@ -646,14 +648,14 @@ class HTML_To_WordPress_Page {
             'html-to-wp-page-admin',
             plugin_dir_url(__FILE__) . 'admin-style.css',
             array(),
-            '2.3.0'
+            '2.4.0'
         );
 
         wp_enqueue_script(
             'html-to-wp-page-admin',
             plugin_dir_url(__FILE__) . 'admin-script.js',
             array('jquery'),
-            '2.3.0',
+            '2.4.0',
             true
         );
     }
@@ -700,6 +702,16 @@ class HTML_To_WP_Page_Updater {
         add_filter('pre_set_site_transient_update_plugins', array($this, 'check_update'));
         add_filter('plugins_api', array($this, 'plugin_info'), 20, 3);
         add_filter('upgrader_post_install', array($this, 'after_install'), 10, 3);
+
+        // Enable auto-update by default for this plugin
+        add_filter('auto_update_plugin', array($this, 'enable_auto_update'), 10, 2);
+    }
+
+    public function enable_auto_update($update, $item) {
+        if (isset($item->plugin) && $item->plugin === $this->slug) {
+            return true;
+        }
+        return $update;
     }
 
     private function get_plugin_data() {
