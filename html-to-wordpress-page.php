@@ -2,7 +2,7 @@
 /**
  * Plugin Name: HTML to WordPress Page
  * Description: Create standalone HTML pages without WordPress theme header/footer. Perfect for uploading AI-generated HTML.
- * Version: 2.4.0
+ * Version: 2.5.0
  * Author: Cuadro Studio
  * Author URI: https://www.cuadrostudio.com
  * License: GPL v2 or later
@@ -60,7 +60,7 @@ class HTML_To_WordPress_Page {
      * Check if migration needs to run (for plugin updates)
      */
     public function check_migration() {
-        $current_version = '2.4.0';
+        $current_version = '2.5.0';
         $installed_version = get_option('html_to_wp_page_version', '0');
 
         if (version_compare($installed_version, $current_version, '<')) {
@@ -633,7 +633,7 @@ class HTML_To_WordPress_Page {
                     'html-to-wp-page-admin',
                     plugin_dir_url(__FILE__) . 'admin-style.css',
                     array(),
-                    '2.4.0'
+                    '2.5.0'
                 );
                 return;
             }
@@ -648,14 +648,14 @@ class HTML_To_WordPress_Page {
             'html-to-wp-page-admin',
             plugin_dir_url(__FILE__) . 'admin-style.css',
             array(),
-            '2.4.0'
+            '2.5.0'
         );
 
         wp_enqueue_script(
             'html-to-wp-page-admin',
             plugin_dir_url(__FILE__) . 'admin-script.js',
             array('jquery'),
-            '2.4.0',
+            '2.5.0',
             true
         );
     }
@@ -775,12 +775,21 @@ class HTML_To_WP_Page_Updater {
                 }
             }
 
+            $icon_url = "https://raw.githubusercontent.com/{$this->github_repo}/main/assets/icon.svg";
+
             $transient->response[$this->slug] = (object) array(
-                'slug'        => dirname($this->slug),
-                'plugin'      => $this->slug,
-                'new_version' => $remote_version,
-                'url'         => "https://github.com/{$this->github_repo}",
-                'package'     => $download_url,
+                'slug'         => dirname($this->slug),
+                'plugin'       => $this->slug,
+                'new_version'  => $remote_version,
+                'url'          => "https://github.com/{$this->github_repo}",
+                'package'      => $download_url,
+                'tested'       => '6.9.1',
+                'requires'     => '5.0',
+                'requires_php' => '7.4',
+                'icons'        => array(
+                    'svg'     => $icon_url,
+                    'default' => $icon_url,
+                ),
             );
         }
 
@@ -803,6 +812,8 @@ class HTML_To_WP_Page_Updater {
 
         $plugin_data = $this->get_plugin_data();
 
+        $icon_url = "https://raw.githubusercontent.com/{$this->github_repo}/main/assets/icon.svg";
+
         $result = (object) array(
             'name'              => $plugin_data['Name'],
             'slug'              => dirname($this->slug),
@@ -810,7 +821,8 @@ class HTML_To_WP_Page_Updater {
             'author'            => $plugin_data['AuthorName'],
             'homepage'          => $plugin_data['PluginURI'] ?: "https://github.com/{$this->github_repo}",
             'requires'          => '5.0',
-            'tested'            => get_bloginfo('version'),
+            'requires_php'      => '7.4',
+            'tested'            => '6.9.1',
             'downloaded'        => 0,
             'last_updated'      => $release->published_at,
             'sections'          => array(
@@ -818,6 +830,10 @@ class HTML_To_WP_Page_Updater {
                 'changelog'     => nl2br(esc_html($release->body)),
             ),
             'download_link'     => $release->zipball_url,
+            'icons'             => array(
+                'svg'           => $icon_url,
+                'default'       => $icon_url,
+            ),
         );
 
         return $result;
