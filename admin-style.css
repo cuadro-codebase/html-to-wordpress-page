@@ -1,5 +1,6 @@
 /* HTML to WordPress Page Admin Styles */
 
+/* URL display box */
 .html-wp-page-url {
     background: #f0f6fc;
     border: 1px solid #c3c4c7;
@@ -19,6 +20,7 @@
     text-decoration: underline;
 }
 
+/* HTML content textarea */
 #html_content {
     font-family: 'Courier New', Consolas, Monaco, monospace;
     font-size: 13px;
@@ -28,19 +30,23 @@
     min-height: 400px;
 }
 
+/* File input styling */
 #html-file-input {
     padding: 8px 0;
 }
 
+/* Slug preview */
 #slug-preview {
     color: #2271b1;
     font-weight: 500;
 }
 
+/* Form table */
 .form-table th {
     width: 150px;
 }
 
+/* Pages list table code styling */
 .wp-list-table code {
     background: #f0f0f1;
     padding: 2px 6px;
@@ -51,4 +57,9 @@
 #html_content.drag-over {
     border: 2px dashed #2271b1;
     background: #f0f6fc;
+}
+
+/* Pages list column */
+.column-html_page {
+    width: 60px !important;
 }

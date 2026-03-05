@@ -3,10 +3,17 @@
 
     $(document).ready(function() {
 
-        // Auto-generate slug from title
+        var htmlContent = $('#html_content');
+        var fileInput = $('#html-file-input');
         var titleInput = $('#title');
         var slugInput = $('#slug');
         var slugPreview = $('#slug-preview');
+
+        if (!htmlContent.length) {
+            return;
+        }
+
+        // Slug auto-generation from title
         var slugManuallyEdited = slugInput.val() !== '';
 
         titleInput.on('input', function() {
@@ -31,14 +38,10 @@
         });
 
         // Handle HTML file upload
-        var fileInput = $('#html-file-input');
-        var htmlContent = $('#html_content');
-
         fileInput.on('change', function(e) {
             var file = this.files[0];
             if (!file) return;
 
-            // Check file extension
             var ext = file.name.split('.').pop().toLowerCase();
             if (ext !== 'html' && ext !== 'htm') {
                 alert('Please select an HTML file (.html or .htm)');
@@ -46,15 +49,13 @@
                 return;
             }
 
-            // Read file using FileReader (client-side)
             var reader = new FileReader();
             reader.onload = function(e) {
                 htmlContent.val(e.target.result);
 
-                // Auto-fill title from filename if empty
+                // Auto-fill title if empty
                 if (!titleInput.val()) {
                     var filename = file.name.replace(/\.[^/.]+$/, '');
-                    // Convert filename to readable title
                     var title = filename
                         .replace(/[-_]/g, ' ')
                         .replace(/\b\w/g, function(l) { return l.toUpperCase(); });
