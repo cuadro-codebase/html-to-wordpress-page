@@ -136,16 +136,14 @@
 
 /* ── Import panel ── */
 #html-import-panel {
-    margin: 12px 0 0;
-    max-width: 520px;
+    margin: 16px 0 0;
 }
 
 #html-import-drop {
     border: 2px dashed #c3c4c7;
-    border-radius: 6px;
-    padding: 24px;
+    border-radius: 8px;
+    padding: 60px 40px;
     text-align: center;
-    cursor: pointer;
     transition: border-color .15s, background .15s;
 }
 
@@ -155,56 +153,135 @@
     background: #f0f6fc;
 }
 
-#html-import-drop p {
-    margin: 0;
-    font-size: 14px;
-    color: #50575e;
+.html-import-drop-icon {
+    margin-bottom: 12px;
 }
 
-.html-import-browse {
-    color: #2271b1;
-    cursor: pointer;
-    text-decoration: underline;
+.html-import-drop-text {
+    font-size: 18px;
+    color: #1d2327;
+    margin: 0 0 4px;
 }
 
-.html-import-browse:hover {
-    color: #135e96;
+.html-import-drop-text code {
+    background: #f0f0f1;
+    padding: 2px 6px;
+    border-radius: 3px;
 }
 
-#html-import-results {
-    margin-top: 10px;
-}
-
-.html-import-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 8px 12px;
-    background: #f6f7f7;
-    border-radius: 4px;
-    margin-bottom: 4px;
+.html-import-drop-or {
     font-size: 13px;
+    color: #8c8f94;
+    margin: 8px 0 12px;
 }
 
-.html-import-row-done {
-    background: #edfaef;
+.html-import-browse-btn {
+    cursor: pointer;
 }
 
-.html-import-row-title {
+.html-import-drop-hint {
+    font-size: 12px;
+    color: #8c8f94;
+    margin: 16px 0 0;
+}
+
+/* Import queue */
+#html-import-queue {
+    margin-top: 16px;
+}
+
+.html-import-item {
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    padding: 12px 16px;
+    margin-bottom: 8px;
+}
+
+.html-import-item-fields {
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
+}
+
+.html-import-field {
+    flex: 1;
+}
+
+.html-import-field label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: #646970;
+    margin-bottom: 4px;
+}
+
+.html-import-field input {
+    width: 100%;
+    padding: 6px 10px;
+    font-size: 14px;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+
+.html-import-field input:focus {
+    border-color: #2271b1;
+    box-shadow: 0 0 0 1px #2271b1;
+    outline: none;
+}
+
+.html-import-remove {
+    background: none;
+    border: none;
+    font-size: 22px;
+    color: #a00;
+    cursor: pointer;
+    padding: 4px 8px;
+    line-height: 1;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+
+.html-import-remove:hover {
+    background: #fcecec;
+}
+
+.html-import-item-status {
+    font-size: 13px;
+    margin-top: 8px;
+}
+
+.html-import-item-status:empty {
+    margin: 0;
+}
+
+.html-import-item-done {
+    background: #f0faf0;
+    border-color: #68de7c;
+}
+
+.html-import-item-success {
+    color: #00a32a;
     font-weight: 500;
 }
 
-.html-import-row-status a {
-    text-decoration: none;
-}
-
-.html-import-edit {
-    margin-left: 8px;
-    color: #2271b1;
-}
-
-.html-import-row-error {
+.html-import-item-error {
     color: #d63638;
+    font-weight: 500;
+}
+
+.html-import-item-status a {
+    text-decoration: none;
+    margin-left: 6px;
+}
+
+/* Import actions */
+#html-import-actions {
+    margin-top: 16px;
+    display: flex;
+    gap: 8px;
 }
 
 /* Import spinner */

@@ -299,13 +299,28 @@ class HTML_To_WordPress_Page {
             <hr class="wp-header-end">
 
             <div id="html-import-panel" style="display:none;">
-                <div id="html-import-drop" data-tooltip="Drop one or more .html files to publish instantly">
-                    <p>Drop <code>.html</code> files here or <label for="html-import-file" class="html-import-browse">browse</label></p>
+                <div id="html-import-drop">
+                    <div class="html-import-drop-icon">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#8c8f94" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                            <polyline points="17 8 12 3 7 8"/>
+                            <line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                    </div>
+                    <p class="html-import-drop-text">Drop <code>.html</code> files here</p>
+                    <p class="html-import-drop-or">or</p>
+                    <label for="html-import-file" class="button button-hero html-import-browse-btn">Select Files</label>
                     <input type="file" id="html-import-file" accept=".html,.htm" multiple style="display:none;">
+                    <p class="html-import-drop-hint">Supports multiple files. Title and slug are auto-generated from filenames.</p>
                 </div>
-                <div id="html-import-results"></div>
+                <div id="html-import-queue"></div>
+                <div id="html-import-actions" style="display:none;">
+                    <button type="button" class="button button-primary button-hero" id="html-import-publish">Publish All</button>
+                    <button type="button" class="button button-hero" id="html-import-cancel">Cancel</button>
+                </div>
             </div>
 
+            <div id="html-page-list-section">
             <div class="html-page-search-wrap">
                 <input type="search" id="html-page-search" placeholder="Search by title or slug..." autocomplete="off">
                 <span class="html-page-search-spinner"></span>
@@ -351,6 +366,7 @@ class HTML_To_WordPress_Page {
                     <?php endif; ?>
                 </tbody>
             </table>
+            </div>
         </div>
         <?php
     }
@@ -427,12 +443,13 @@ class HTML_To_WordPress_Page {
 
         $title = isset($_POST['title']) ? sanitize_text_field($_POST['title']) : '';
         $html  = isset($_POST['html']) ? $_POST['html'] : '';
+        $slug_input = isset($_POST['slug']) ? sanitize_title($_POST['slug']) : '';
 
         if (empty($title) || empty($html)) {
             wp_send_json_error('Title and HTML content are required.');
         }
 
-        $slug = sanitize_title($title);
+        $slug = !empty($slug_input) ? $slug_input : sanitize_title($title);
 
         // Ensure unique slug
         $unique_slug = wp_unique_post_slug($slug, 0, 'publish', 'page', 0);
