@@ -41,6 +41,9 @@ class HTML_To_WordPress_Page {
         // AJAX search for list page
         add_action('wp_ajax_html_page_search', array($this, 'ajax_search_pages'));
 
+        // AJAX import
+        add_action('wp_ajax_html_page_import', array($this, 'ajax_import_page'));
+
         // Handle downloads
         add_action('admin_init', array($this, 'handle_download'));
 
@@ -289,10 +292,19 @@ class HTML_To_WordPress_Page {
         <div class="wrap">
             <h1 class="wp-heading-inline">HTML Pages</h1>
             <a href="<?php echo admin_url('admin.php?page=html-to-wp-page-new'); ?>" class="page-title-action">Add New</a>
+            <button type="button" class="page-title-action" id="html-import-toggle">Import</button>
             <?php if (!empty($pages)): ?>
                 <a href="<?php echo wp_nonce_url(admin_url('admin.php?page=html-to-wp-page&action=download_all'), 'download_all_html_pages'); ?>" class="page-title-action">Download All</a>
             <?php endif; ?>
             <hr class="wp-header-end">
+
+            <div id="html-import-panel" style="display:none;">
+                <div id="html-import-drop" data-tooltip="Drop one or more .html files to publish instantly">
+                    <p>Drop <code>.html</code> files here or <label for="html-import-file" class="html-import-browse">browse</label></p>
+                    <input type="file" id="html-import-file" accept=".html,.htm" multiple style="display:none;">
+                </div>
+                <div id="html-import-results"></div>
+            </div>
 
             <div class="html-page-search-wrap">
                 <input type="search" id="html-page-search" placeholder="Search by title or slug..." autocomplete="off">
@@ -405,6 +417,50 @@ class HTML_To_WordPress_Page {
         }
 
         wp_send_json_success($rows);
+    }
+
+    /**
+     * AJAX handler for quick import
+     */
+    public function ajax_import_page() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+
+        $title = isset($_POST['title']) ? sanitize_text_field($_POST['title']) : '';
+        $html  = isset($_POST['html']) ? $_POST['html'] : '';
+
+        if (empty($title) || empty($html)) {
+            wp_send_json_error('Title and HTML content are required.');
+        }
+
+        $slug = sanitize_title($title);
+
+        // Ensure unique slug
+        $unique_slug = wp_unique_post_slug($slug, 0, 'publish', 'page', 0);
+
+        $page_id = wp_insert_post(array(
+            'post_title'  => $title,
+            'post_name'   => $unique_slug,
+            'post_status' => 'publish',
+            'post_type'   => 'page',
+            'post_content'=> '',
+        ));
+
+        if (!$page_id || is_wp_error($page_id)) {
+            wp_send_json_error('Failed to create page.');
+        }
+
+        update_post_meta($page_id, self::META_KEY_CONTENT, $html);
+        update_post_meta($page_id, self::META_KEY_ENABLED, '1');
+
+        $page = get_post($page_id);
+        $url  = $this->get_page_url($page);
+
+        wp_send_json_success(array(
+            'title' => esc_html($title),
+            'slug'  => esc_html($page->post_name),
+            'url'   => esc_url($url),
+            'edit_url' => admin_url('admin.php?page=html-to-wp-page-new&id=' . $page_id),
+        ));
     }
 
     /**

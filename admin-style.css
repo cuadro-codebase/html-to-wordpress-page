@@ -133,3 +133,89 @@
 @keyframes html-spinner-rotate {
     to { transform: rotate(360deg); }
 }
+
+/* ── Import panel ── */
+#html-import-panel {
+    margin: 12px 0 0;
+    max-width: 520px;
+}
+
+#html-import-drop {
+    border: 2px dashed #c3c4c7;
+    border-radius: 6px;
+    padding: 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+}
+
+#html-import-drop:hover,
+#html-import-drop.html-import-dragover {
+    border-color: #2271b1;
+    background: #f0f6fc;
+}
+
+#html-import-drop p {
+    margin: 0;
+    font-size: 14px;
+    color: #50575e;
+}
+
+.html-import-browse {
+    color: #2271b1;
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+.html-import-browse:hover {
+    color: #135e96;
+}
+
+#html-import-results {
+    margin-top: 10px;
+}
+
+.html-import-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: #f6f7f7;
+    border-radius: 4px;
+    margin-bottom: 4px;
+    font-size: 13px;
+}
+
+.html-import-row-done {
+    background: #edfaef;
+}
+
+.html-import-row-title {
+    font-weight: 500;
+}
+
+.html-import-row-status a {
+    text-decoration: none;
+}
+
+.html-import-edit {
+    margin-left: 8px;
+    color: #2271b1;
+}
+
+.html-import-row-error {
+    color: #d63638;
+}
+
+/* Import spinner */
+.html-import-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid transparent;
+    border-top-color: #3c434a;
+    border-radius: 50%;
+    animation: html-spinner-rotate .6s linear infinite;
+    vertical-align: middle;
+    margin-right: 4px;
+}

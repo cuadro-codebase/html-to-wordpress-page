@@ -69,6 +69,86 @@
             searchInput.focus();
         }
 
+        // ── Quick Import ──
+        var importToggle = $('#html-import-toggle');
+        var importPanel = $('#html-import-panel');
+        if (importToggle.length) {
+            var importDrop = $('#html-import-drop');
+            var importFile = $('#html-import-file');
+            var importResults = $('#html-import-results');
+
+            importToggle.on('click', function() {
+                importPanel.slideToggle(150);
+            });
+
+            function importFiles(files) {
+                for (var i = 0; i < files.length; i++) {
+                    (function(file) {
+                        var ext = file.name.split('.').pop().toLowerCase();
+                        if (ext !== 'html' && ext !== 'htm') return;
+
+                        var title = file.name.replace(/\.[^/.]+$/, '')
+                            .replace(/[-_]/g, ' ')
+                            .replace(/\b\w/g, function(l) { return l.toUpperCase(); });
+
+                        // Add a pending row
+                        var row = $('<div class="html-import-row">' +
+                            '<span class="html-import-row-title">' + $('<span>').text(title).html() + '</span>' +
+                            '<span class="html-import-row-status"><span class="html-import-spinner"></span> Publishing...</span>' +
+                            '</div>');
+                        importResults.append(row);
+
+                        var reader = new FileReader();
+                        reader.onload = function(e) {
+                            $.post(htmlPageAdmin.ajaxUrl, {
+                                action: 'html_page_import',
+                                nonce: htmlPageAdmin.nonce,
+                                title: title,
+                                html: e.target.result
+                            }, function(res) {
+                                if (res.success) {
+                                    var d = res.data;
+                                    row.find('.html-import-row-status').html(
+                                        '<a href="' + d.url + '" target="_blank">' + d.slug + '</a> ' +
+                                        '<a href="' + d.edit_url + '" class="html-import-edit">Edit</a>'
+                                    );
+                                    row.addClass('html-import-row-done');
+                                    // Reload page list after short delay
+                                    clearTimeout(importReloadTimer);
+                                    importReloadTimer = setTimeout(function() { location.reload(); }, 1500);
+                                } else {
+                                    row.find('.html-import-row-status').text('Failed').addClass('html-import-row-error');
+                                }
+                            }).fail(function() {
+                                row.find('.html-import-row-status').text('Failed').addClass('html-import-row-error');
+                            });
+                        };
+                        reader.readAsText(file);
+                    })(files[i]);
+                }
+            }
+
+            var importReloadTimer = null;
+
+            importFile.on('change', function() {
+                if (this.files.length) importFiles(this.files);
+                this.value = '';
+            });
+
+            importDrop.on('dragover', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                $(this).addClass('html-import-dragover');
+            }).on('dragleave drop', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                $(this).removeClass('html-import-dragover');
+            }).on('drop', function(e) {
+                var files = e.originalEvent.dataTransfer.files;
+                if (files.length) importFiles(files);
+            });
+        }
+
         var htmlContent = $('#html_content');
         var fileInput = $('#html-file-input');
         var titleInput = $('#title');
