@@ -363,23 +363,29 @@ class HTML_To_WordPress_Page {
                     'compare' => '=',
                 ),
             ),
-            'orderby'        => 'date',
-            'order'          => 'DESC',
+            'orderby'          => 'date',
+            'order'            => 'DESC',
+            'suppress_filters' => false,
         );
 
         if ($term !== '') {
             // Search in title and slug (post_name)
-            add_filter('posts_where', function($where) use ($wpdb, $term) {
+            $filter = function($where) use ($wpdb, $term) {
                 $like = '%' . $wpdb->esc_like($term) . '%';
                 $where .= $wpdb->prepare(
                     " AND ({$wpdb->posts}.post_title LIKE %s OR {$wpdb->posts}.post_name LIKE %s)",
                     $like, $like
                 );
                 return $where;
-            });
+            };
+            add_filter('posts_where', $filter);
         }
 
         $pages = get_posts($args);
+
+        if ($term !== '') {
+            remove_filter('posts_where', $filter);
+        }
 
         $rows = array();
         foreach ($pages as $page) {
