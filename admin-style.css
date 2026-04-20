@@ -257,10 +257,15 @@
 .html-import-item-status {
     font-size: 13px;
     margin-top: 8px;
+    min-height: 20px;
 }
 
-.html-import-item-status:empty {
-    margin: 0;
+.html-import-remove {
+    visibility: visible;
+}
+
+.html-import-item-publishing .html-import-remove {
+    visibility: hidden;
 }
 
 .html-import-item-done {

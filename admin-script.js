@@ -177,7 +177,7 @@
 
                     // Disable inputs, show spinner
                     entry.el.find('input').prop('disabled', true);
-                    entry.el.find('.html-import-remove').hide();
+                    entry.el.addClass('html-import-item-publishing');
                     entry.el.find('.html-import-item-status').html('<span class="html-import-spinner"></span> Publishing...');
 
                     $.post(htmlPageAdmin.ajaxUrl, {
