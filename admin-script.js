@@ -11,6 +11,7 @@
             var tbody = $('#html-pages-table tbody');
             var timer = null;
             var xhr = null;
+            var originalRows = tbody.html();
 
             searchInput.on('input', function() {
                 var term = $.trim($(this).val());
@@ -18,10 +19,10 @@
                 if (xhr) xhr.abort();
 
                 if (term === '') {
-                    // Reset: show original rows
+                    // Restore original rows
                     spinner.removeClass('is-active');
                     countLabel.text('');
-                    tbody.find('tr').show();
+                    tbody.html(originalRows);
                     return;
                 }
 
