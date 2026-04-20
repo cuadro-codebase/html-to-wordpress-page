@@ -2,7 +2,7 @@
 /**
  * Plugin Name: HTML to WordPress Page
  * Description: Create standalone HTML pages without WordPress theme header/footer. Perfect for uploading AI-generated HTML.
- * Version: 2.5.0
+ * Version: 2.6.0
  * Author: Cuadro Studio
  * Author URI: https://www.cuadrostudio.com
  * License: GPL v2 or later
@@ -19,6 +19,8 @@ class HTML_To_WordPress_Page {
     const META_KEY_CONTENT = '_html_page_content';
     const META_KEY_ENABLED = '_html_page_enabled';
     const META_KEY_LEGACY = '_html_page_legacy';
+    const META_KEY_WP_HEAD = '_html_page_wp_head';
+    const META_KEY_WP_FOOTER = '_html_page_wp_footer';
 
     public function __construct() {
         register_activation_hook(__FILE__, array($this, 'activate'));
@@ -35,6 +37,9 @@ class HTML_To_WordPress_Page {
         // Add column to pages list (new feature)
         add_filter('manage_pages_columns', array($this, 'add_pages_column'));
         add_action('manage_pages_custom_column', array($this, 'render_pages_column'), 10, 2);
+
+        // AJAX search for list page
+        add_action('wp_ajax_html_page_search', array($this, 'ajax_search_pages'));
 
         // Handle downloads
         add_action('admin_init', array($this, 'handle_download'));
@@ -60,7 +65,7 @@ class HTML_To_WordPress_Page {
      * Check if migration needs to run (for plugin updates)
      */
     public function check_migration() {
-        $current_version = '2.5.0';
+        $current_version = '2.6.0';
         $installed_version = get_option('html_to_wp_page_version', '0');
 
         if (version_compare($installed_version, $current_version, '<')) {
@@ -289,7 +294,13 @@ class HTML_To_WordPress_Page {
             <?php endif; ?>
             <hr class="wp-header-end">
 
-            <table class="wp-list-table widefat fixed striped">
+            <div class="html-page-search-wrap">
+                <input type="search" id="html-page-search" placeholder="Search by title or slug..." autocomplete="off">
+                <span class="html-page-search-spinner"></span>
+                <span class="html-page-search-count"></span>
+            </div>
+
+            <table class="wp-list-table widefat fixed striped" id="html-pages-table">
                 <thead>
                     <tr>
                         <th style="width: 25%;">Title</th>
@@ -330,6 +341,64 @@ class HTML_To_WordPress_Page {
             </table>
         </div>
         <?php
+    }
+
+    /**
+     * AJAX handler for instant search on list page
+     */
+    public function ajax_search_pages() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+
+        $term = isset($_POST['term']) ? sanitize_text_field($_POST['term']) : '';
+
+        global $wpdb;
+
+        $args = array(
+            'post_type'      => 'page',
+            'posts_per_page' => -1,
+            'meta_query'     => array(
+                array(
+                    'key'     => self::META_KEY_ENABLED,
+                    'value'   => '1',
+                    'compare' => '=',
+                ),
+            ),
+            'orderby'        => 'date',
+            'order'          => 'DESC',
+        );
+
+        if ($term !== '') {
+            // Search in title and slug (post_name)
+            add_filter('posts_where', function($where) use ($wpdb, $term) {
+                $like = '%' . $wpdb->esc_like($term) . '%';
+                $where .= $wpdb->prepare(
+                    " AND ({$wpdb->posts}.post_title LIKE %s OR {$wpdb->posts}.post_name LIKE %s)",
+                    $like, $like
+                );
+                return $where;
+            });
+        }
+
+        $pages = get_posts($args);
+
+        $rows = array();
+        foreach ($pages as $page) {
+            $url = $this->get_page_url($page);
+            $rows[] = array(
+                'id'         => $page->ID,
+                'title'      => esc_html($page->post_title),
+                'slug'       => esc_html($page->post_name),
+                'url'        => esc_url($url),
+                'url_display'=> esc_html($url),
+                'created'    => date('M j, Y', strtotime($page->post_date)),
+                'edit_url'   => admin_url('admin.php?page=html-to-wp-page-new&id=' . $page->ID),
+                'wp_edit_url'=> get_edit_post_link($page->ID, 'raw'),
+                'download_url'=> wp_nonce_url(admin_url('admin.php?page=html-to-wp-page&action=download&id=' . $page->ID), 'download_html_page_' . $page->ID),
+                'delete_url' => wp_nonce_url(admin_url('admin.php?page=html-to-wp-page&action=delete&id=' . $page->ID), 'delete_html_page_' . $page->ID),
+            );
+        }
+
+        wp_send_json_success($rows);
     }
 
     /**
@@ -381,6 +450,8 @@ class HTML_To_WordPress_Page {
                         ));
                         update_post_meta($page_id, self::META_KEY_CONTENT, $html_content);
                         update_post_meta($page_id, self::META_KEY_ENABLED, '1');
+                        update_post_meta($page_id, self::META_KEY_WP_HEAD, isset($_POST['wp_head_enabled']) ? '1' : '0');
+                        update_post_meta($page_id, self::META_KEY_WP_FOOTER, isset($_POST['wp_footer_enabled']) ? '1' : '0');
 
                         // Bust caches for this page
                         clean_post_cache($page_id);
@@ -404,6 +475,8 @@ class HTML_To_WordPress_Page {
                         if ($new_page_id && !is_wp_error($new_page_id)) {
                             update_post_meta($new_page_id, self::META_KEY_CONTENT, $html_content);
                             update_post_meta($new_page_id, self::META_KEY_ENABLED, '1');
+                            update_post_meta($new_page_id, self::META_KEY_WP_HEAD, isset($_POST['wp_head_enabled']) ? '1' : '0');
+                            update_post_meta($new_page_id, self::META_KEY_WP_FOOTER, isset($_POST['wp_footer_enabled']) ? '1' : '0');
 
                             // Redirect to edit URL with ID so subsequent saves update correctly
                             wp_redirect(admin_url('admin.php?page=html-to-wp-page-new&id=' . $new_page_id . '&msg=created'));
@@ -418,6 +491,8 @@ class HTML_To_WordPress_Page {
 
         // Get meta values for display
         $html_content = $page ? get_post_meta($page->ID, self::META_KEY_CONTENT, true) : '';
+        $wp_head_enabled = $page ? get_post_meta($page->ID, self::META_KEY_WP_HEAD, true) : '';
+        $wp_footer_enabled = $page ? get_post_meta($page->ID, self::META_KEY_WP_FOOTER, true) : '';
 
         ?>
         <div class="wrap">
@@ -480,6 +555,24 @@ class HTML_To_WordPress_Page {
                         <td>
                             <textarea id="html_content" name="html_content" rows="25" class="large-text code" required><?php echo esc_textarea($html_content); ?></textarea>
                             <p class="description">Paste your complete HTML code here (including &lt;!DOCTYPE html&gt;, CSS, and JavaScript)</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>SEO / Plugin Hooks</th>
+                        <td>
+                            <fieldset>
+                                <label>
+                                    <input type="checkbox" name="wp_head_enabled" value="1" <?php checked($wp_head_enabled, '1'); ?>>
+                                    Load <code>wp_head()</code> &mdash; injects before <code>&lt;/head&gt;</code>
+                                </label>
+                                <p class="description">Allows SEO plugins (Yoast, Rank Math, etc.) to inject meta tags, Open Graph data, and schema markup into this page.</p>
+                                <br>
+                                <label>
+                                    <input type="checkbox" name="wp_footer_enabled" value="1" <?php checked($wp_footer_enabled, '1'); ?>>
+                                    Load <code>wp_footer()</code> &mdash; injects before <code>&lt;/body&gt;</code>
+                                </label>
+                                <p class="description">Allows plugins to inject tracking scripts (analytics, pixels) and other footer code into this page.</p>
+                            </fieldset>
                         </td>
                     </tr>
                 </table>
@@ -589,6 +682,7 @@ class HTML_To_WordPress_Page {
                 $html_content = get_post_meta($page->ID, self::META_KEY_CONTENT, true);
 
                 if ($enabled === '1' && !empty($html_content)) {
+                    $html_content = $this->maybe_inject_wp_hooks($html_content, $page->ID);
                     echo $html_content;
                     exit;
                 }
@@ -615,10 +709,48 @@ class HTML_To_WordPress_Page {
         $html_content = get_post_meta($post_id, self::META_KEY_CONTENT, true);
 
         if ($enabled === '1' && !empty($html_content)) {
-            // Output raw HTML and exit
+            $html_content = $this->maybe_inject_wp_hooks($html_content, $post_id);
             echo $html_content;
             exit;
         }
+    }
+
+    /**
+     * Inject wp_head() and wp_footer() output into HTML content if enabled
+     */
+    private function maybe_inject_wp_hooks($html_content, $post_id) {
+        $inject_head = get_post_meta($post_id, self::META_KEY_WP_HEAD, true) === '1';
+        $inject_footer = get_post_meta($post_id, self::META_KEY_WP_FOOTER, true) === '1';
+
+        if (!$inject_head && !$inject_footer) {
+            return $html_content;
+        }
+
+        if ($inject_head) {
+            ob_start();
+            wp_head();
+            $head_output = ob_get_clean();
+
+            // Insert before </head>
+            $pos = stripos($html_content, '</head>');
+            if ($pos !== false) {
+                $html_content = substr_replace($html_content, $head_output . "\n", $pos, 0);
+            }
+        }
+
+        if ($inject_footer) {
+            ob_start();
+            wp_footer();
+            $footer_output = ob_get_clean();
+
+            // Insert before </body>
+            $pos = stripos($html_content, '</body>');
+            if ($pos !== false) {
+                $html_content = substr_replace($html_content, $footer_output . "\n", $pos, 0);
+            }
+        }
+
+        return $html_content;
     }
 
     /**
@@ -633,7 +765,7 @@ class HTML_To_WordPress_Page {
                     'html-to-wp-page-admin',
                     plugin_dir_url(__FILE__) . 'admin-style.css',
                     array(),
-                    '2.5.0'
+                    '2.6.0'
                 );
                 return;
             }
@@ -648,16 +780,21 @@ class HTML_To_WordPress_Page {
             'html-to-wp-page-admin',
             plugin_dir_url(__FILE__) . 'admin-style.css',
             array(),
-            '2.5.0'
+            '2.6.0'
         );
 
         wp_enqueue_script(
             'html-to-wp-page-admin',
             plugin_dir_url(__FILE__) . 'admin-script.js',
             array('jquery'),
-            '2.5.0',
+            '2.6.0',
             true
         );
+
+        wp_localize_script('html-to-wp-page-admin', 'htmlPageAdmin', array(
+            'ajaxUrl' => admin_url('admin-ajax.php'),
+            'nonce'   => wp_create_nonce('html_page_search_nonce'),
+        ));
     }
 
     /**

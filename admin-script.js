@@ -3,6 +3,71 @@
 
     $(document).ready(function() {
 
+        // ── Instant search on list page ──
+        var searchInput = $('#html-page-search');
+        if (searchInput.length) {
+            var spinner = $('.html-page-search-spinner');
+            var countLabel = $('.html-page-search-count');
+            var tbody = $('#html-pages-table tbody');
+            var timer = null;
+            var xhr = null;
+
+            searchInput.on('input', function() {
+                var term = $.trim($(this).val());
+                clearTimeout(timer);
+                if (xhr) xhr.abort();
+
+                if (term === '') {
+                    // Reset: show original rows
+                    spinner.removeClass('is-active');
+                    countLabel.text('');
+                    tbody.find('tr').show();
+                    return;
+                }
+
+                spinner.addClass('is-active');
+                timer = setTimeout(function() {
+                    xhr = $.post(htmlPageAdmin.ajaxUrl, {
+                        action: 'html_page_search',
+                        nonce: htmlPageAdmin.nonce,
+                        term: term
+                    }, function(res) {
+                        spinner.removeClass('is-active');
+                        if (!res.success) return;
+
+                        var rows = res.data;
+                        countLabel.text(rows.length + ' result' + (rows.length !== 1 ? 's' : ''));
+
+                        if (rows.length === 0) {
+                            tbody.html('<tr><td colspan="5">No pages matching &ldquo;' + $('<span>').text(term).html() + '&rdquo;</td></tr>');
+                            return;
+                        }
+
+                        var html = '';
+                        for (var i = 0; i < rows.length; i++) {
+                            var r = rows[i];
+                            html += '<tr>'
+                                + '<td><strong>' + r.title + '</strong></td>'
+                                + '<td><code>' + r.slug + '</code></td>'
+                                + '<td><a href="' + r.url + '" target="_blank">' + r.url_display + '</a></td>'
+                                + '<td>' + r.created + '</td>'
+                                + '<td>'
+                                    + '<a href="' + r.edit_url + '">Edit</a> | '
+                                    + '<a href="' + r.wp_edit_url + '">WP Edit</a> | '
+                                    + '<a href="' + r.download_url + '">Download</a> | '
+                                    + '<a href="' + r.delete_url + '" onclick="return confirm(\'Are you sure you want to delete this page?\');" style="color:#a00;">Delete</a>'
+                                + '</td>'
+                                + '</tr>';
+                        }
+                        tbody.html(html);
+                    });
+                }, 250);
+            });
+
+            // Focus search on page load
+            searchInput.focus();
+        }
+
         var htmlContent = $('#html_content');
         var fileInput = $('#html-file-input');
         var titleInput = $('#title');

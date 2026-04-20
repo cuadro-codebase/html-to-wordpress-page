@@ -63,3 +63,73 @@
 .column-html_page {
     width: 60px !important;
 }
+
+/* ── Search box on list page ── */
+.html-page-search-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 16px 0 12px;
+}
+
+#html-page-search {
+    width: 320px;
+    padding: 6px 12px;
+    font-size: 14px;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    outline: none;
+    transition: border-color .15s;
+}
+
+#html-page-search:focus {
+    border-color: #2271b1;
+    box-shadow: 0 0 0 1px #2271b1;
+}
+
+.html-page-search-count {
+    font-size: 13px;
+    color: #646970;
+}
+
+/* iOS-style 12-blade spinner */
+.html-page-search-spinner {
+    display: none;
+    width: 18px;
+    height: 18px;
+    position: relative;
+}
+
+.html-page-search-spinner.is-active {
+    display: inline-block;
+}
+
+.html-page-search-spinner::before,
+.html-page-search-spinner::after {
+    content: '';
+}
+
+@keyframes html-search-spin {
+    0%  { opacity: 1; }
+    100% { opacity: .15; }
+}
+
+.html-page-search-spinner.is-active {
+    animation: none;
+}
+
+/* 12 blades via box-shadows on a pseudo-element rotating */
+.html-page-search-spinner::after {
+    content: '';
+    display: block;
+    width: 18px;
+    height: 18px;
+    border: 2px solid transparent;
+    border-top-color: #3c434a;
+    border-radius: 50%;
+    animation: html-spinner-rotate .6s linear infinite;
+}
+
+@keyframes html-spinner-rotate {
+    to { transform: rotate(360deg); }
+}
