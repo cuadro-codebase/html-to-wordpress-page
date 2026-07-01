@@ -2,7 +2,7 @@
 /**
  * Plugin Name: HTML to WordPress Page
  * Description: Create standalone HTML pages without WordPress theme header/footer. Perfect for uploading AI-generated HTML.
- * Version: 2.7.0
+ * Version: 2.11.0
  * Author: Cuadro Studio
  * Author URI: https://www.cuadrostudio.com
  * License: GPL v2 or later
@@ -21,6 +21,8 @@ class HTML_To_WordPress_Page {
     const META_KEY_LEGACY = '_html_page_legacy';
     const META_KEY_WP_HEAD = '_html_page_wp_head';
     const META_KEY_WP_FOOTER = '_html_page_wp_footer';
+    const META_KEY_PINNED = '_html_page_pinned';
+    const META_KEY_FOLDER = '_html_page_folder';
 
     public function __construct() {
         register_activation_hook(__FILE__, array($this, 'activate'));
@@ -43,6 +45,22 @@ class HTML_To_WordPress_Page {
 
         // AJAX import
         add_action('wp_ajax_html_page_import', array($this, 'ajax_import_page'));
+
+        // AJAX toggle pin
+        add_action('wp_ajax_html_page_toggle_pin', array($this, 'ajax_toggle_pin'));
+
+        // Folder AJAX handlers
+        add_action('wp_ajax_html_page_set_folder', array($this, 'ajax_set_folder'));
+        add_action('wp_ajax_html_page_create_folder', array($this, 'ajax_create_folder'));
+        add_action('wp_ajax_html_page_rename_folder', array($this, 'ajax_rename_folder'));
+        add_action('wp_ajax_html_page_delete_folder', array($this, 'ajax_delete_folder'));
+        add_action('wp_ajax_html_page_reorder_folders', array($this, 'ajax_reorder_folders'));
+
+        // Bulk action AJAX handlers
+        add_action('wp_ajax_html_page_bulk_delete', array($this, 'ajax_bulk_delete'));
+        add_action('wp_ajax_html_page_bulk_pin', array($this, 'ajax_bulk_pin'));
+        add_action('wp_ajax_html_page_bulk_set_folder', array($this, 'ajax_bulk_set_folder'));
+        add_action('wp_ajax_html_page_bulk_download', array($this, 'ajax_bulk_download'));
 
         // Handle downloads
         add_action('admin_init', array($this, 'handle_download'));
@@ -68,7 +86,7 @@ class HTML_To_WordPress_Page {
      * Check if migration needs to run (for plugin updates)
      */
     public function check_migration() {
-        $current_version = '2.7.0';
+        $current_version = '2.11.0';
         $installed_version = get_option('html_to_wp_page_version', '0');
 
         if (version_compare($installed_version, $current_version, '<')) {
@@ -271,32 +289,65 @@ class HTML_To_WordPress_Page {
             }
         }
 
-        // Get all pages with HTML content enabled
-        $args = array(
-            'post_type'      => 'page',
-            'posts_per_page' => -1,
-            'meta_query'     => array(
-                array(
-                    'key'     => self::META_KEY_ENABLED,
-                    'value'   => '1',
-                    'compare' => '=',
-                ),
-            ),
-            'orderby'        => 'date',
-            'order'          => 'DESC',
-        );
-
-        $pages = get_posts($args);
+        $pages = $this->get_sorted_pages();
+        $total_count = count($pages);
+        $folder_stats = $this->get_folder_stats();
+        $folders = $this->get_all_folders();
+        $authors = $this->get_html_authors();
 
         ?>
         <div class="wrap">
-            <h1 class="wp-heading-inline">HTML Pages</h1>
+            <h1 class="wp-heading-inline">HTML Pages <span class="title-count html-page-count" aria-hidden="true"><?php echo intval($total_count); ?></span></h1>
             <a href="<?php echo admin_url('admin.php?page=html-to-wp-page-new'); ?>" class="page-title-action">Add New</a>
             <button type="button" class="page-title-action" id="html-import-toggle">Import</button>
             <?php if (!empty($pages)): ?>
                 <a href="<?php echo wp_nonce_url(admin_url('admin.php?page=html-to-wp-page&action=download_all'), 'download_all_html_pages'); ?>" class="page-title-action">Download All</a>
             <?php endif; ?>
+            <button type="button" class="page-title-action html-filter-toggle" id="html-filter-toggle" aria-expanded="false">
+                <span class="html-filter-toggle-icon" aria-hidden="true">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg>
+                </span>
+                <span>Filter</span>
+                <span class="html-filter-badge" id="html-filter-badge" style="display:none;">0</span>
+            </button>
             <hr class="wp-header-end">
+
+            <div class="html-filter-panel" id="html-filter-panel" style="display:none;">
+                <div class="html-filter-panel-grid">
+                    <div class="html-filter-field">
+                        <label for="html-filter-date-from">Created after</label>
+                        <input type="date" id="html-filter-date-from">
+                    </div>
+                    <div class="html-filter-field">
+                        <label for="html-filter-date-to">Created before</label>
+                        <input type="date" id="html-filter-date-to">
+                    </div>
+                    <div class="html-filter-field">
+                        <label for="html-filter-author">Author</label>
+                        <select id="html-filter-author">
+                            <option value="0">Any author</option>
+                            <?php foreach ($authors as $a): ?>
+                                <option value="<?php echo intval($a['id']); ?>"><?php echo esc_html($a['name']); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="html-filter-field">
+                        <label for="html-filter-pinned">Pinned status</label>
+                        <select id="html-filter-pinned">
+                            <option value="">Any</option>
+                            <option value="pinned">Pinned only</option>
+                            <option value="unpinned">Unpinned only</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="html-filter-panel-actions">
+                    <button type="button" class="button button-primary html-filter-apply" id="html-filter-apply">
+                        <span class="html-filter-apply-label">Apply</span>
+                        <span class="html-filter-apply-spinner" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" class="button" id="html-filter-clear">Clear</button>
+                </div>
+            </div>
 
             <div id="html-import-panel" style="display:none;">
                 <div id="html-import-drop">
@@ -327,48 +378,441 @@ class HTML_To_WordPress_Page {
                 <span class="html-page-search-count"></span>
             </div>
 
+            <div class="html-folder-chips" id="html-folder-chips" data-active="__all">
+                <button type="button" class="html-folder-chip is-active" data-folder-key="__all" data-tooltip="Show all pages">
+                    <span class="html-folder-chip-label">All</span>
+                    <span class="html-folder-chip-count"><?php echo intval($folder_stats['__all']); ?></span>
+                </button>
+                <button type="button" class="html-folder-chip" data-folder-key="__none" data-tooltip="Pages not in any folder">
+                    <span class="html-folder-chip-label">Unfiled</span>
+                    <span class="html-folder-chip-count"><?php echo intval($folder_stats['__none']); ?></span>
+                </button>
+                <?php foreach ($folders as $folder_name): ?>
+                    <div class="html-folder-chip" data-folder-key="<?php echo esc_attr($folder_name); ?>" data-tooltip="Show pages in this folder" draggable="true" role="button" tabindex="0">
+                        <span class="html-folder-chip-drag" aria-hidden="true" data-tooltip="Drag to reorder">
+                            <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor"><circle cx="2" cy="2" r="1.2"/><circle cx="8" cy="2" r="1.2"/><circle cx="2" cy="7" r="1.2"/><circle cx="8" cy="7" r="1.2"/><circle cx="2" cy="12" r="1.2"/><circle cx="8" cy="12" r="1.2"/></svg>
+                        </span>
+                        <span class="html-folder-chip-icon" aria-hidden="true">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                        </span>
+                        <span class="html-folder-chip-label"><?php echo esc_html($folder_name); ?></span>
+                        <span class="html-folder-chip-count"><?php echo intval(isset($folder_stats['folders'][$folder_name]) ? $folder_stats['folders'][$folder_name] : 0); ?></span>
+                        <button type="button" class="html-folder-chip-kebab" data-folder="<?php echo esc_attr($folder_name); ?>" aria-label="Folder options" tabindex="-1">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>
+                        </button>
+                    </div>
+                <?php endforeach; ?>
+                <button type="button" class="html-folder-chip-new" id="html-folder-new" data-tooltip="Create a new folder">
+                    <span aria-hidden="true">+</span> New Folder
+                </button>
+            </div>
+
+            <div class="html-bulk-bar" id="html-bulk-bar" style="display:none;" aria-live="polite">
+                <span class="html-bulk-count"><span class="html-bulk-count-n">0</span> selected</span>
+                <div class="html-bulk-actions">
+                    <button type="button" class="button html-bulk-btn" id="html-bulk-move" data-tooltip="Move selected pages to a folder">
+                        <span class="html-bulk-btn-label">Move to folder&hellip;</span>
+                        <span class="html-bulk-btn-spinner" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" class="button html-bulk-btn" id="html-bulk-pin" data-tooltip="Pin selected pages to the top">
+                        <span class="html-bulk-btn-label">Pin</span>
+                        <span class="html-bulk-btn-spinner" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" class="button html-bulk-btn" id="html-bulk-unpin" data-tooltip="Unpin selected pages">
+                        <span class="html-bulk-btn-label">Unpin</span>
+                        <span class="html-bulk-btn-spinner" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" class="button html-bulk-btn" id="html-bulk-download" data-tooltip="Download selected pages as .zip">
+                        <span class="html-bulk-btn-label">Download</span>
+                        <span class="html-bulk-btn-spinner" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" class="button html-bulk-btn html-bulk-btn-danger" id="html-bulk-delete" data-tooltip="Move selected pages to trash">
+                        <span class="html-bulk-btn-label">Delete</span>
+                        <span class="html-bulk-btn-spinner" aria-hidden="true"></span>
+                    </button>
+                </div>
+                <button type="button" class="html-bulk-clear" id="html-bulk-clear" data-tooltip="Clear selection" aria-label="Clear selection">&times;</button>
+            </div>
+
             <table class="wp-list-table widefat fixed striped" id="html-pages-table">
                 <thead>
                     <tr>
-                        <th style="width: 25%;">Title</th>
-                        <th style="width: 20%;">Slug</th>
-                        <th style="width: 25%;">URL</th>
-                        <th style="width: 10%;">Created</th>
-                        <th style="width: 20%;">Actions</th>
+                        <th class="html-check-col" style="width: 34px;">
+                            <label class="html-check-label" data-tooltip="Select all on this page">
+                                <input type="checkbox" id="html-check-all" aria-label="Select all">
+                                <span class="html-check-box" aria-hidden="true"></span>
+                            </label>
+                        </th>
+                        <th class="html-sortable" data-sort-key="title" style="width: 20%;">
+                            <span class="html-sort-label">Title</span>
+                            <span class="html-sort-arrows" aria-hidden="true">
+                                <span class="html-sort-arrow up">&#9650;</span>
+                                <span class="html-sort-arrow down">&#9660;</span>
+                            </span>
+                        </th>
+                        <th class="html-sortable" data-sort-key="slug" style="width: 14%;">
+                            <span class="html-sort-label">Slug</span>
+                            <span class="html-sort-arrows" aria-hidden="true">
+                                <span class="html-sort-arrow up">&#9650;</span>
+                                <span class="html-sort-arrow down">&#9660;</span>
+                            </span>
+                        </th>
+                        <th class="html-sortable" data-sort-key="url" style="width: 19%;">
+                            <span class="html-sort-label">URL</span>
+                            <span class="html-sort-arrows" aria-hidden="true">
+                                <span class="html-sort-arrow up">&#9650;</span>
+                                <span class="html-sort-arrow down">&#9660;</span>
+                            </span>
+                        </th>
+                        <th class="html-sortable" data-sort-key="folder" style="width: 12%;">
+                            <span class="html-sort-label">Folder</span>
+                            <span class="html-sort-arrows" aria-hidden="true">
+                                <span class="html-sort-arrow up">&#9650;</span>
+                                <span class="html-sort-arrow down">&#9660;</span>
+                            </span>
+                        </th>
+                        <th class="html-sortable" data-sort-key="created" style="width: 12%;">
+                            <span class="html-sort-label">Created</span>
+                            <span class="html-sort-arrows" aria-hidden="true">
+                                <span class="html-sort-arrow up">&#9650;</span>
+                                <span class="html-sort-arrow down">&#9660;</span>
+                            </span>
+                        </th>
+                        <th style="width: 19%;">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if (empty($pages)): ?>
                         <tr>
-                            <td colspan="5">No HTML pages found. <a href="<?php echo admin_url('admin.php?page=html-to-wp-page-new'); ?>">Create one</a></td>
+                            <td colspan="7">No HTML pages found. <a href="<?php echo admin_url('admin.php?page=html-to-wp-page-new'); ?>">Create one</a></td>
                         </tr>
                     <?php else: ?>
                         <?php foreach ($pages as $page): ?>
-                            <tr>
-                                <td><strong><?php echo esc_html($page->post_title); ?></strong></td>
-                                <td><code><?php echo esc_html($page->post_name); ?></code></td>
-                                <td>
-                                    <a href="<?php echo esc_url($this->get_page_url($page)); ?>" target="_blank">
-                                        <?php echo esc_html($this->get_page_url($page)); ?>
-                                    </a>
-                                </td>
-                                <td><?php echo date('M j, Y', strtotime($page->post_date)); ?></td>
-                                <td>
-                                    <a href="<?php echo admin_url('admin.php?page=html-to-wp-page-new&id=' . $page->ID); ?>">Edit</a> |
-                                    <a href="<?php echo get_edit_post_link($page->ID); ?>">WP Edit</a> |
-                                    <a href="<?php echo wp_nonce_url(admin_url('admin.php?page=html-to-wp-page&action=download&id=' . $page->ID), 'download_html_page_' . $page->ID); ?>">Download</a> |
-                                    <a href="<?php echo wp_nonce_url(admin_url('admin.php?page=html-to-wp-page&action=delete&id=' . $page->ID), 'delete_html_page_' . $page->ID); ?>"
-                                       onclick="return confirm('Are you sure you want to delete this page?');"
-                                       style="color: #a00;">Delete</a>
-                                </td>
-                            </tr>
+                            <?php echo $this->render_page_row($page); ?>
                         <?php endforeach; ?>
                     <?php endif; ?>
                 </tbody>
             </table>
             </div>
+
+            <?php // Reusable custom modal ?>
+            <div class="html-modal-backdrop" id="html-modal-backdrop" style="display:none;">
+                <div class="html-modal" role="dialog" aria-modal="true" aria-labelledby="html-modal-title">
+                    <div class="html-modal-header">
+                        <h2 id="html-modal-title" class="html-modal-title">Title</h2>
+                        <button type="button" class="html-modal-close" data-tooltip="Close" aria-label="Close">&times;</button>
+                    </div>
+                    <div class="html-modal-body" id="html-modal-body"></div>
+                    <div class="html-modal-footer">
+                        <button type="button" class="button html-modal-cancel">Cancel</button>
+                        <button type="button" class="button button-primary html-modal-confirm">
+                            <span class="html-modal-confirm-label">Confirm</span>
+                            <span class="html-modal-confirm-spinner" aria-hidden="true"></span>
+                        </button>
+                    </div>
+                </div>
+            </div>
         </div>
         <?php
+    }
+
+    /**
+     * Fetch all enabled HTML pages with pinned items first.
+     * Pinned ordered by pin timestamp DESC, unpinned by post_date DESC.
+     */
+    private function get_sorted_pages($where_filter = null, $folder_key = '__all') {
+        $meta_query = array(
+            array(
+                'key'     => self::META_KEY_ENABLED,
+                'value'   => '1',
+                'compare' => '=',
+            ),
+        );
+
+        if ($folder_key === '__none') {
+            $meta_query[] = array(
+                'relation' => 'OR',
+                array(
+                    'key'     => self::META_KEY_FOLDER,
+                    'compare' => 'NOT EXISTS',
+                ),
+                array(
+                    'key'     => self::META_KEY_FOLDER,
+                    'value'   => '',
+                    'compare' => '=',
+                ),
+            );
+        } elseif ($folder_key !== '__all' && $folder_key !== '' && $folder_key !== null) {
+            $meta_query[] = array(
+                'key'     => self::META_KEY_FOLDER,
+                'value'   => $folder_key,
+                'compare' => '=',
+            );
+        }
+
+        $args = array(
+            'post_type'      => 'page',
+            'posts_per_page' => -1,
+            'meta_query'     => $meta_query,
+            'orderby'          => 'date',
+            'order'            => 'DESC',
+            'suppress_filters' => false,
+        );
+
+        if (is_callable($where_filter)) {
+            add_filter('posts_where', $where_filter);
+        }
+
+        $pages = get_posts($args);
+
+        if (is_callable($where_filter)) {
+            remove_filter('posts_where', $where_filter);
+        }
+
+        $pinned = array();
+        $unpinned = array();
+        foreach ($pages as $p) {
+            $pin_ts = (int) get_post_meta($p->ID, self::META_KEY_PINNED, true);
+            if ($pin_ts > 0) {
+                $p->__pin_ts = $pin_ts;
+                $pinned[] = $p;
+            } else {
+                $p->__pin_ts = 0;
+                $unpinned[] = $p;
+            }
+        }
+        usort($pinned, function($a, $b) {
+            return $b->__pin_ts - $a->__pin_ts;
+        });
+
+        return array_merge($pinned, $unpinned);
+    }
+
+    /**
+     * Get all distinct folder names in use (sorted alphabetically, case-insensitive).
+     */
+    private function get_all_folders() {
+        global $wpdb;
+        $sql = $wpdb->prepare(
+            "SELECT DISTINCT pm.meta_value
+             FROM {$wpdb->postmeta} pm
+             INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+             WHERE pm.meta_key = %s
+               AND pm.meta_value != ''
+               AND p.post_status = 'publish'
+               AND p.post_type = 'page'",
+            self::META_KEY_FOLDER
+        );
+        $meta_folders = $wpdb->get_col($sql);
+        $meta_folders = is_array($meta_folders) ? $meta_folders : array();
+
+        // The option acts as the ordering + registry (includes empty folders).
+        $ordered = get_option('html_to_wp_page_folders', array());
+        if (!is_array($ordered)) $ordered = array();
+
+        // Start from the saved order, keep only names that are in the option.
+        $result = array();
+        $seen_lower = array();
+        foreach ($ordered as $name) {
+            $name = trim((string) $name);
+            if ($name === '') continue;
+            $key = strtolower($name);
+            if (isset($seen_lower[$key])) continue;
+            $result[] = $name;
+            $seen_lower[$key] = true;
+        }
+
+        // Append any folders found in postmeta that aren't in the option yet
+        // (case: user added a page to a fresh folder before the option knew about it).
+        foreach ($meta_folders as $name) {
+            $name = trim((string) $name);
+            if ($name === '') continue;
+            $key = strtolower($name);
+            if (isset($seen_lower[$key])) continue;
+            $result[] = $name;
+            $seen_lower[$key] = true;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Get list of authors who have at least one HTML page.
+     * Returns [ ['id' => int, 'name' => 'Display Name'], ... ]
+     */
+    private function get_html_authors() {
+        global $wpdb;
+        $sql = $wpdb->prepare(
+            "SELECT DISTINCT p.post_author
+             FROM {$wpdb->posts} p
+             INNER JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID
+             WHERE pm.meta_key = %s
+               AND pm.meta_value = '1'
+               AND p.post_status = 'publish'
+               AND p.post_type = 'page'",
+            self::META_KEY_ENABLED
+        );
+        $ids = $wpdb->get_col($sql);
+        $ids = is_array($ids) ? array_map('intval', $ids) : array();
+        $authors = array();
+        foreach ($ids as $id) {
+            $u = get_userdata($id);
+            if (!$u) continue;
+            $authors[] = array('id' => $id, 'name' => $u->display_name ?: $u->user_login);
+        }
+        usort($authors, function($a, $b) { return strnatcasecmp($a['name'], $b['name']); });
+        return $authors;
+    }
+
+    /**
+     * Get counts per folder: total, unfiled, and each folder.
+     */
+    private function get_folder_stats() {
+        $args = array(
+            'post_type'      => 'page',
+            'posts_per_page' => -1,
+            'fields'         => 'ids',
+            'meta_query'     => array(
+                array(
+                    'key'     => self::META_KEY_ENABLED,
+                    'value'   => '1',
+                    'compare' => '=',
+                ),
+            ),
+        );
+        $ids = get_posts($args);
+        $stats = array(
+            '__all'   => count($ids),
+            '__none'  => 0,
+            'folders' => array(),
+        );
+        foreach ($ids as $id) {
+            $folder = trim((string) get_post_meta($id, self::META_KEY_FOLDER, true));
+            if ($folder === '') {
+                $stats['__none']++;
+            } else {
+                if (!isset($stats['folders'][$folder])) {
+                    $stats['folders'][$folder] = 0;
+                }
+                $stats['folders'][$folder]++;
+            }
+        }
+        ksort($stats['folders'], SORT_NATURAL | SORT_FLAG_CASE);
+        return $stats;
+    }
+
+    /**
+     * Render a single row for the list table (server-side parity with AJAX).
+     */
+    private function render_page_row($page) {
+        $is_pinned = ((int) get_post_meta($page->ID, self::META_KEY_PINNED, true)) > 0;
+        $url = $this->get_page_url($page);
+        $created_ts = strtotime($page->post_date);
+        $created_display = date_i18n('M j, Y g:i a', $created_ts);
+        $folder = trim((string) get_post_meta($page->ID, self::META_KEY_FOLDER, true));
+        $folder_display = $folder === '' ? 'Unfiled' : $folder;
+
+        $pin_nonce = wp_create_nonce('html_page_toggle_pin_' . $page->ID);
+        $folder_nonce = wp_create_nonce('html_page_set_folder_' . $page->ID);
+        $pin_label = $is_pinned ? 'Unpin from top' : 'Pin to top';
+        $pin_class = 'html-pin-toggle' . ($is_pinned ? ' is-pinned' : '');
+
+        // Folder sort key: put "Unfiled" (empty) last when ASC by using a high-sort char.
+        $folder_sort_key = $folder === '' ? '~~~unfiled' : strtolower($folder);
+
+        ob_start();
+        ?>
+        <tr data-id="<?php echo intval($page->ID); ?>"
+            data-pinned="<?php echo $is_pinned ? '1' : '0'; ?>"
+            data-created="<?php echo intval($created_ts); ?>"
+            data-title="<?php echo esc_attr(strtolower($page->post_title)); ?>"
+            data-slug="<?php echo esc_attr(strtolower($page->post_name)); ?>"
+            data-url="<?php echo esc_attr(strtolower($url)); ?>"
+            data-folder="<?php echo esc_attr($folder); ?>"
+            data-folder-sort="<?php echo esc_attr($folder_sort_key); ?>"
+            class="<?php echo $is_pinned ? 'html-row-pinned' : ''; ?>">
+            <td class="html-check-col">
+                <label class="html-check-label" data-tooltip="Select this page">
+                    <input type="checkbox" class="html-row-check" value="<?php echo intval($page->ID); ?>" aria-label="Select <?php echo esc_attr($page->post_title); ?>">
+                    <span class="html-check-box" aria-hidden="true"></span>
+                </label>
+            </td>
+            <td>
+                <?php if ($is_pinned): ?><span class="html-pinned-marker" data-tooltip="Pinned to top">&#128204;</span> <?php endif; ?>
+                <strong><?php echo esc_html($page->post_title); ?></strong>
+            </td>
+            <td><code><?php echo esc_html($page->post_name); ?></code></td>
+            <td>
+                <a href="<?php echo esc_url($url); ?>" target="_blank"><?php echo esc_html($url); ?></a>
+            </td>
+            <td class="html-folder-cell">
+                <button type="button"
+                        class="html-folder-pill<?php echo $folder === '' ? ' is-unfiled' : ''; ?>"
+                        data-id="<?php echo intval($page->ID); ?>"
+                        data-nonce="<?php echo esc_attr($folder_nonce); ?>"
+                        data-current="<?php echo esc_attr($folder); ?>"
+                        data-tooltip="Change folder">
+                    <?php if ($folder !== ''): ?>
+                        <span class="html-folder-pill-icon" aria-hidden="true">
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                        </span>
+                    <?php endif; ?>
+                    <span class="html-folder-pill-label"><?php echo esc_html($folder_display); ?></span>
+                    <span class="html-folder-pill-caret" aria-hidden="true">&#9662;</span>
+                    <span class="html-folder-pill-spinner" aria-hidden="true"></span>
+                </button>
+            </td>
+            <td><?php echo esc_html($created_display); ?></td>
+            <td class="html-actions-cell">
+                <button type="button"
+                        class="<?php echo esc_attr($pin_class); ?>"
+                        data-id="<?php echo intval($page->ID); ?>"
+                        data-nonce="<?php echo esc_attr($pin_nonce); ?>"
+                        data-tooltip="<?php echo esc_attr($pin_label); ?>"
+                        aria-label="<?php echo esc_attr($pin_label); ?>">
+                    <span class="html-pin-icon" aria-hidden="true">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"></line><path d="M5 17h14l-1.5-3V8a2 2 0 0 0-2-2H8.5a2 2 0 0 0-2 2v6L5 17z"></path></svg>
+                    </span>
+                    <span class="html-pin-spinner" aria-hidden="true"></span>
+                </button>
+                <a href="<?php echo admin_url('admin.php?page=html-to-wp-page-new&id=' . $page->ID); ?>" data-tooltip="Edit in plugin editor">Edit</a> |
+                <a href="<?php echo get_edit_post_link($page->ID); ?>" data-tooltip="Open in WordPress editor">WP Edit</a> |
+                <a href="<?php echo wp_nonce_url(admin_url('admin.php?page=html-to-wp-page&action=download&id=' . $page->ID), 'download_html_page_' . $page->ID); ?>" data-tooltip="Download as .html file">Download</a> |
+                <a href="<?php echo wp_nonce_url(admin_url('admin.php?page=html-to-wp-page&action=delete&id=' . $page->ID), 'delete_html_page_' . $page->ID); ?>"
+                   onclick="return confirm('Are you sure you want to delete this page?');"
+                   data-tooltip="Move page to trash"
+                   style="color: #a00;">Delete</a>
+            </td>
+        </tr>
+        <?php
+        return ob_get_clean();
+    }
+
+    /**
+     * AJAX handler to toggle pinned state on a page.
+     */
+    public function ajax_toggle_pin() {
+        $post_id = isset($_POST['id']) ? intval($_POST['id']) : 0;
+        $nonce = isset($_POST['nonce']) ? $_POST['nonce'] : '';
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
+
+        if (!$post_id || !wp_verify_nonce($nonce, 'html_page_toggle_pin_' . $post_id)) {
+            wp_send_json_error('Invalid request');
+        }
+
+        $current = (int) get_post_meta($post_id, self::META_KEY_PINNED, true);
+        if ($current > 0) {
+            delete_post_meta($post_id, self::META_KEY_PINNED);
+            $pinned = false;
+        } else {
+            update_post_meta($post_id, self::META_KEY_PINNED, time());
+            $pinned = true;
+        }
+
+        wp_send_json_success(array('pinned' => $pinned));
     }
 
     /**
@@ -378,61 +822,434 @@ class HTML_To_WordPress_Page {
         check_ajax_referer('html_page_search_nonce', 'nonce');
 
         $term = isset($_POST['term']) ? sanitize_text_field($_POST['term']) : '';
+        $folder_key = isset($_POST['folder']) ? sanitize_text_field(wp_unslash($_POST['folder'])) : '__all';
+
+        $date_from = isset($_POST['date_from']) ? sanitize_text_field($_POST['date_from']) : '';
+        $date_to   = isset($_POST['date_to']) ? sanitize_text_field($_POST['date_to']) : '';
+        $author_id = isset($_POST['author']) ? intval($_POST['author']) : 0;
+        $pinned    = isset($_POST['pinned']) ? sanitize_text_field($_POST['pinned']) : ''; // '', 'pinned', 'unpinned'
+
+        // Validate date strings (YYYY-MM-DD).
+        $date_from_ok = ($date_from !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_from));
+        $date_to_ok   = ($date_to   !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_to));
 
         global $wpdb;
 
-        $args = array(
-            'post_type'      => 'page',
-            'posts_per_page' => -1,
-            'meta_query'     => array(
-                array(
-                    'key'     => self::META_KEY_ENABLED,
-                    'value'   => '1',
-                    'compare' => '=',
-                ),
-            ),
-            'orderby'          => 'date',
-            'order'            => 'DESC',
-            'suppress_filters' => false,
-        );
-
-        if ($term !== '') {
-            // Search in title and slug (post_name)
-            $filter = function($where) use ($wpdb, $term) {
+        $where_filter = function($where) use ($wpdb, $term, $date_from, $date_from_ok, $date_to, $date_to_ok, $author_id) {
+            if ($term !== '') {
                 $like = '%' . $wpdb->esc_like($term) . '%';
                 $where .= $wpdb->prepare(
                     " AND ({$wpdb->posts}.post_title LIKE %s OR {$wpdb->posts}.post_name LIKE %s)",
                     $like, $like
                 );
-                return $where;
-            };
-            add_filter('posts_where', $filter);
+            }
+            if ($date_from_ok) {
+                $where .= $wpdb->prepare(" AND {$wpdb->posts}.post_date >= %s", $date_from . ' 00:00:00');
+            }
+            if ($date_to_ok) {
+                $where .= $wpdb->prepare(" AND {$wpdb->posts}.post_date <= %s", $date_to . ' 23:59:59');
+            }
+            if ($author_id > 0) {
+                $where .= $wpdb->prepare(" AND {$wpdb->posts}.post_author = %d", $author_id);
+            }
+            return $where;
+        };
+
+        $pages = $this->get_sorted_pages($where_filter, $folder_key);
+
+        // Post-filter: pinned status (uses meta and would complicate the SQL).
+        if ($pinned === 'pinned') {
+            $pages = array_values(array_filter($pages, function($p) { return $p->__pin_ts > 0; }));
+        } elseif ($pinned === 'unpinned') {
+            $pages = array_values(array_filter($pages, function($p) { return $p->__pin_ts == 0; }));
         }
 
-        $pages = get_posts($args);
-
-        if ($term !== '') {
-            remove_filter('posts_where', $filter);
-        }
-
-        $rows = array();
+        $rows_html = '';
         foreach ($pages as $page) {
-            $url = $this->get_page_url($page);
-            $rows[] = array(
-                'id'         => $page->ID,
-                'title'      => esc_html($page->post_title),
-                'slug'       => esc_html($page->post_name),
-                'url'        => esc_url($url),
-                'url_display'=> esc_html($url),
-                'created'    => date('M j, Y', strtotime($page->post_date)),
-                'edit_url'   => admin_url('admin.php?page=html-to-wp-page-new&id=' . $page->ID),
-                'wp_edit_url'=> get_edit_post_link($page->ID, 'raw'),
-                'download_url'=> wp_nonce_url(admin_url('admin.php?page=html-to-wp-page&action=download&id=' . $page->ID), 'download_html_page_' . $page->ID),
-                'delete_url' => wp_nonce_url(admin_url('admin.php?page=html-to-wp-page&action=delete&id=' . $page->ID), 'delete_html_page_' . $page->ID),
-            );
+            $rows_html .= $this->render_page_row($page);
         }
 
-        wp_send_json_success($rows);
+        wp_send_json_success(array(
+            'rows_html' => $rows_html,
+            'count'     => count($pages),
+            'stats'     => $this->get_folder_stats(),
+            'folders'   => $this->get_all_folders(),
+        ));
+    }
+
+    /**
+     * AJAX: set (or clear) the folder for a page.
+     */
+    public function ajax_set_folder() {
+        $post_id = isset($_POST['id']) ? intval($_POST['id']) : 0;
+        $nonce = isset($_POST['nonce']) ? $_POST['nonce'] : '';
+        $folder = isset($_POST['folder']) ? $this->sanitize_folder_name(wp_unslash($_POST['folder'])) : '';
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
+
+        if (!$post_id || !wp_verify_nonce($nonce, 'html_page_set_folder_' . $post_id)) {
+            wp_send_json_error('Invalid request');
+        }
+
+        if ($folder === '') {
+            delete_post_meta($post_id, self::META_KEY_FOLDER);
+        } else {
+            update_post_meta($post_id, self::META_KEY_FOLDER, $folder);
+        }
+
+        wp_send_json_success(array(
+            'folder'  => $folder,
+            'stats'   => $this->get_folder_stats(),
+            'folders' => $this->get_all_folders(),
+        ));
+    }
+
+    /**
+     * AJAX: create an empty folder (a folder only exists once a page is in it,
+     * so we return it in the list even if empty for the current session).
+     */
+    public function ajax_create_folder() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
+
+        $name = $this->sanitize_folder_name(wp_unslash(isset($_POST['name']) ? $_POST['name'] : ''));
+        if ($name === '') {
+            wp_send_json_error('Folder name is required');
+        }
+
+        // Store as an option so folder order + empty folders persist across requests.
+        $registered = get_option('html_to_wp_page_folders', array());
+        if (!is_array($registered)) {
+            $registered = array();
+        }
+        $existing_lower = array_map('strtolower', $registered);
+        $all_existing_lower = array_map('strtolower', $this->get_all_folders());
+        if (in_array(strtolower($name), $existing_lower, true) || in_array(strtolower($name), $all_existing_lower, true)) {
+            wp_send_json_error('A folder with this name already exists');
+        }
+        $registered[] = $name; // append to end — user can drag to reorder
+        update_option('html_to_wp_page_folders', $registered);
+
+        wp_send_json_success(array(
+            'name'    => $name,
+            'stats'   => $this->get_folder_stats(),
+            'folders' => $this->get_all_folders(),
+        ));
+    }
+
+    /**
+     * AJAX: rename a folder — updates every page in that folder.
+     */
+    public function ajax_rename_folder() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
+
+        $old = $this->sanitize_folder_name(wp_unslash(isset($_POST['old']) ? $_POST['old'] : ''));
+        $new = $this->sanitize_folder_name(wp_unslash(isset($_POST['new']) ? $_POST['new'] : ''));
+
+        if ($old === '' || $new === '') {
+            wp_send_json_error('Both old and new folder names are required');
+        }
+
+        if (strtolower($old) === strtolower($new)) {
+            wp_send_json_success(array(
+                'name'    => $new,
+                'stats'   => $this->get_folder_stats(),
+                'folders' => $this->get_all_folders(),
+            ));
+        }
+
+        $existing_lower = array_map('strtolower', $this->get_all_folders());
+        if (in_array(strtolower($new), $existing_lower, true)) {
+            wp_send_json_error('A folder with this name already exists');
+        }
+
+        global $wpdb;
+        $wpdb->update(
+            $wpdb->postmeta,
+            array('meta_value' => $new),
+            array('meta_key' => self::META_KEY_FOLDER, 'meta_value' => $old)
+        );
+
+        // Update the ordered-folders option: replace old name in-place with new.
+        $registered = get_option('html_to_wp_page_folders', array());
+        if (is_array($registered)) {
+            $found = false;
+            foreach ($registered as $i => $n) {
+                if (strtolower($n) === strtolower($old)) {
+                    $registered[$i] = $new;
+                    $found = true;
+                    break;
+                }
+            }
+            if (!$found) $registered[] = $new;
+            update_option('html_to_wp_page_folders', $registered);
+        }
+
+        wp_send_json_success(array(
+            'name'    => $new,
+            'stats'   => $this->get_folder_stats(),
+            'folders' => $this->get_all_folders(),
+        ));
+    }
+
+    /**
+     * AJAX: reorder folders. Accepts an ordered array of folder names.
+     * Names not present in the current folder set are dropped; missing folders are appended.
+     */
+    public function ajax_reorder_folders() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
+
+        $incoming = isset($_POST['order']) ? (array) wp_unslash($_POST['order']) : array();
+        $current  = $this->get_all_folders();
+        $current_lower = array_map('strtolower', $current);
+        $current_by_lower = array();
+        foreach ($current as $c) { $current_by_lower[strtolower($c)] = $c; }
+
+        $new_order = array();
+        $seen_lower = array();
+        foreach ($incoming as $name) {
+            $name = trim(sanitize_text_field($name));
+            if ($name === '') continue;
+            $key = strtolower($name);
+            if (!isset($current_by_lower[$key]) || isset($seen_lower[$key])) continue;
+            $new_order[] = $current_by_lower[$key];
+            $seen_lower[$key] = true;
+        }
+        // Append any folders not in incoming to preserve them.
+        foreach ($current as $name) {
+            $key = strtolower($name);
+            if (isset($seen_lower[$key])) continue;
+            $new_order[] = $name;
+            $seen_lower[$key] = true;
+        }
+
+        update_option('html_to_wp_page_folders', $new_order);
+
+        wp_send_json_success(array(
+            'folders' => $this->get_all_folders(),
+            'stats'   => $this->get_folder_stats(),
+        ));
+    }
+
+    /**
+     * AJAX: delete a folder — all pages inside move to Unfiled.
+     */
+    public function ajax_delete_folder() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
+
+        $name = $this->sanitize_folder_name(wp_unslash(isset($_POST['name']) ? $_POST['name'] : ''));
+        if ($name === '') {
+            wp_send_json_error('Folder name is required');
+        }
+
+        global $wpdb;
+        $wpdb->delete($wpdb->postmeta, array(
+            'meta_key'   => self::META_KEY_FOLDER,
+            'meta_value' => $name,
+        ));
+
+        // Remove from registered-empty-folders option too.
+        $registered = get_option('html_to_wp_page_folders', array());
+        if (is_array($registered)) {
+            $registered = array_values(array_filter($registered, function($n) use ($name) {
+                return strtolower($n) !== strtolower($name);
+            }));
+            update_option('html_to_wp_page_folders', $registered);
+        }
+
+        wp_send_json_success(array(
+            'stats'   => $this->get_folder_stats(),
+            'folders' => $this->get_all_folders(),
+        ));
+    }
+
+    /**
+     * Sanitize a folder name — trim, strip tags, cap length, disallow ~~~ marker.
+     */
+    private function sanitize_folder_name($raw) {
+        $name = trim(sanitize_text_field($raw));
+        if ($name === '') return '';
+        if (mb_strlen($name) > 50) {
+            $name = mb_substr($name, 0, 50);
+        }
+        return $name;
+    }
+
+    /**
+     * Sanitize a bulk-action IDs input into a list of valid HTML-page post IDs.
+     */
+    private function sanitize_bulk_ids($raw) {
+        if (is_string($raw)) {
+            $raw = array_filter(array_map('trim', explode(',', $raw)), 'strlen');
+        }
+        if (!is_array($raw)) return array();
+        $ids = array();
+        foreach ($raw as $val) {
+            $id = intval($val);
+            if ($id <= 0) continue;
+            $post = get_post($id);
+            if (!$post || $post->post_type !== 'page') continue;
+            // Only touch pages that were flagged as HTML pages by this plugin.
+            if (get_post_meta($id, self::META_KEY_ENABLED, true) !== '1') continue;
+            $ids[] = $id;
+        }
+        return array_values(array_unique($ids));
+    }
+
+    /**
+     * AJAX: bulk delete (trash) selected HTML pages.
+     */
+    public function ajax_bulk_delete() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
+        $ids = $this->sanitize_bulk_ids(isset($_POST['ids']) ? $_POST['ids'] : array());
+        if (empty($ids)) {
+            wp_send_json_error('No valid pages selected');
+        }
+        $count = 0;
+        foreach ($ids as $id) {
+            delete_post_meta($id, self::META_KEY_CONTENT);
+            delete_post_meta($id, self::META_KEY_ENABLED);
+            if (wp_trash_post($id)) $count++;
+        }
+        wp_send_json_success(array(
+            'affected' => $count,
+            'ids'      => $ids,
+            'stats'    => $this->get_folder_stats(),
+            'folders'  => $this->get_all_folders(),
+        ));
+    }
+
+    /**
+     * AJAX: bulk pin or unpin selected HTML pages.
+     */
+    public function ajax_bulk_pin() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
+        $ids = $this->sanitize_bulk_ids(isset($_POST['ids']) ? $_POST['ids'] : array());
+        $pin = isset($_POST['pin']) && $_POST['pin'] === '1';
+        if (empty($ids)) {
+            wp_send_json_error('No valid pages selected');
+        }
+        $count = 0;
+        $base_ts = time();
+        foreach ($ids as $i => $id) {
+            if ($pin) {
+                update_post_meta($id, self::META_KEY_PINNED, $base_ts + $i);
+            } else {
+                delete_post_meta($id, self::META_KEY_PINNED);
+            }
+            $count++;
+        }
+        wp_send_json_success(array(
+            'affected' => $count,
+            'ids'      => $ids,
+            'pinned'   => $pin,
+        ));
+    }
+
+    /**
+     * AJAX: bulk move selected pages to a folder (or clear folder if empty).
+     */
+    public function ajax_bulk_set_folder() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
+        $ids = $this->sanitize_bulk_ids(isset($_POST['ids']) ? $_POST['ids'] : array());
+        $folder = $this->sanitize_folder_name(wp_unslash(isset($_POST['folder']) ? $_POST['folder'] : ''));
+        if (empty($ids)) {
+            wp_send_json_error('No valid pages selected');
+        }
+        $count = 0;
+        foreach ($ids as $id) {
+            if ($folder === '') {
+                delete_post_meta($id, self::META_KEY_FOLDER);
+            } else {
+                update_post_meta($id, self::META_KEY_FOLDER, $folder);
+            }
+            $count++;
+        }
+        wp_send_json_success(array(
+            'affected' => $count,
+            'ids'      => $ids,
+            'folder'   => $folder,
+            'stats'    => $this->get_folder_stats(),
+            'folders'  => $this->get_all_folders(),
+        ));
+    }
+
+    /**
+     * AJAX: bulk download selected pages as a zip. Streams the zip in the response.
+     */
+    public function ajax_bulk_download() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
+        $ids = $this->sanitize_bulk_ids(isset($_POST['ids']) ? $_POST['ids'] : array());
+        if (empty($ids)) {
+            wp_send_json_error('No valid pages selected');
+        }
+
+        if (!class_exists('ZipArchive')) {
+            wp_send_json_error('Server is missing the ZipArchive PHP extension');
+        }
+
+        $zip = new ZipArchive();
+        $zip_filename = sys_get_temp_dir() . '/html-pages-bulk-' . time() . '-' . wp_generate_password(6, false) . '.zip';
+        if ($zip->open($zip_filename, ZipArchive::CREATE) !== true) {
+            wp_send_json_error('Could not create archive');
+        }
+
+        $used = array();
+        foreach ($ids as $id) {
+            $page = get_post($id);
+            if (!$page) continue;
+            $html = get_post_meta($id, self::META_KEY_CONTENT, true);
+            $base = sanitize_file_name($page->post_name);
+            if ($base === '') $base = 'page-' . $id;
+            $filename = $base . '.html';
+            $suffix = 1;
+            while (isset($used[$filename])) {
+                $filename = $base . '-' . $suffix . '.html';
+                $suffix++;
+            }
+            $used[$filename] = true;
+            $zip->addFromString($filename, $html);
+        }
+        $zip->close();
+
+        // Clean any output buffers before streaming binary.
+        while (ob_get_level() > 0) { ob_end_clean(); }
+
+        header('Content-Type: application/zip');
+        header('Content-Disposition: attachment; filename="html-pages-' . date('Ymd-His') . '.zip"');
+        header('Content-Length: ' . filesize($zip_filename));
+        header('Cache-Control: no-store');
+        readfile($zip_filename);
+        @unlink($zip_filename);
+        exit;
     }
 
     /**
@@ -844,7 +1661,7 @@ class HTML_To_WordPress_Page {
                     'html-to-wp-page-admin',
                     plugin_dir_url(__FILE__) . 'admin-style.css',
                     array(),
-                    '2.7.0'
+                    '2.11.0'
                 );
                 return;
             }
@@ -859,14 +1676,14 @@ class HTML_To_WordPress_Page {
             'html-to-wp-page-admin',
             plugin_dir_url(__FILE__) . 'admin-style.css',
             array(),
-            '2.7.0'
+            '2.11.0'
         );
 
         wp_enqueue_script(
             'html-to-wp-page-admin',
             plugin_dir_url(__FILE__) . 'admin-script.js',
             array('jquery'),
-            '2.7.0',
+            '2.11.0',
             true
         );
 
