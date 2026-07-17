@@ -2,7 +2,7 @@
 /**
  * Plugin Name: HTML to WordPress Page
  * Description: Create standalone HTML pages without WordPress theme header/footer. Perfect for uploading AI-generated HTML.
- * Version: 3.1.0
+ * Version: 3.1.1
  * Author: Cuadro Studio
  * Author URI: https://www.cuadrostudio.com
  * License: GPL v2 or later
@@ -32,7 +32,7 @@ class HTML_To_WordPress_Page {
     const META_KEY_PASSCODE    = '_html_page_passcode';     // hashed passcode (wp_hash_password)
     const META_KEY_ACCESS_LOG  = '_html_page_access_log';   // capped list of recent view events
 
-    const VERSION       = '3.1.0';
+    const VERSION       = '3.1.1';
     const COOKIE_PREFIX = 'html_page_access_';   // per-page access cookie
     const ACCESS_TTL    = 43200;                 // access cookie / session lifetime (12h)
     const MAX_PW_TRIES  = 8;                      // passcode attempts before cooldown
@@ -2321,12 +2321,52 @@ class HTML_To_WordPress_Page {
         return $meta . $html; // no <head> — prepend
     }
 
-    /** Generic 404 that does not confirm a page exists (enumeration resistance). */
+    /**
+     * Designed 404. Intentionally generic — it must read identically whether the
+     * slug never existed or is a private page hit without credentials, so it can
+     * never confirm a page exists (enumeration resistance).
+     */
     private function send_not_found() {
         status_header(404);
         nocache_headers();
         header('X-Robots-Tag: noindex, nofollow, noarchive', true);
-        echo '<!DOCTYPE html><html><head><meta name="robots" content="noindex, nofollow"><title>Page Not Found</title></head><body><h1>404 &ndash; Page Not Found</h1></body></html>';
+        $home  = esc_url(home_url('/'));
+        $brand = esc_html(get_bloginfo('name'));
+        echo '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+            . '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            . '<meta name="robots" content="noindex, nofollow, noarchive, nosnippet">'
+            . '<title>Page not found</title><style>'
+            . ':root{color-scheme:light dark}'
+            . '*{box-sizing:border-box}'
+            . 'body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;'
+            . 'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;'
+            . 'background:#f4f5f7;color:#1d2327;-webkit-font-smoothing:antialiased}'
+            . '.hp404{width:100%;max-width:460px;text-align:center}'
+            . '.hp404-num{font-size:96px;line-height:1;font-weight:800;letter-spacing:-.04em;margin:0;'
+            . 'background:linear-gradient(180deg,#3858a0,#8aa1d6);-webkit-background-clip:text;background-clip:text;'
+            . '-webkit-text-fill-color:transparent;color:#3858a0}'
+            . '.hp404 h1{margin:14px 0 8px;font-size:21px;font-weight:650}'
+            . '.hp404 p{margin:0 auto 26px;max-width:360px;font-size:14px;line-height:1.6;color:#5b616b}'
+            . '.hp404-home{display:inline-flex;align-items:center;gap:7px;text-decoration:none;'
+            . 'padding:11px 20px;border-radius:9px;background:#2271b1;color:#fff;font-size:14px;font-weight:600;'
+            . 'transition:background .16s ease,transform .06s ease}'
+            . '.hp404-home:hover{background:#135e96}.hp404-home:active{transform:translateY(1px)}'
+            . '.hp404-home svg{width:16px;height:16px}'
+            . '.hp404-brand{margin-top:34px;font-size:12px;letter-spacing:.02em;color:#9aa0a8}'
+            . '@media(prefers-color-scheme:dark){'
+            . 'body{background:#0f1115;color:#e7e9ee}'
+            . '.hp404-num{background:linear-gradient(180deg,#8aa1d6,#4b6bb5);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}'
+            . '.hp404 p{color:#a4abb6}.hp404-brand{color:#6b7280}'
+            . '.hp404-home{background:#2f6fb0}.hp404-home:hover{background:#3b82c9}}'
+            . '</style></head><body><main class="hp404">'
+            . '<p class="hp404-num">404</p>'
+            . '<h1>This page isn&rsquo;t available</h1>'
+            . '<p>The link may be broken or expired, or the page may have been moved or removed.</p>'
+            . '<a class="hp404-home" href="' . $home . '">'
+            . '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>'
+            . 'Go to homepage</a>'
+            . ($brand !== '' ? '<div class="hp404-brand">' . $brand . '</div>' : '')
+            . '</main></body></html>';
         exit;
     }
 
