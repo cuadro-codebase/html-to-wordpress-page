@@ -2,7 +2,7 @@
 /**
  * Plugin Name: HTML to WordPress Page
  * Description: Create standalone HTML pages without WordPress theme header/footer. Perfect for uploading AI-generated HTML.
- * Version: 3.0.0
+ * Version: 3.0.1
  * Author: Cuadro Studio
  * Author URI: https://www.cuadrostudio.com
  * License: GPL v2 or later
@@ -32,7 +32,7 @@ class HTML_To_WordPress_Page {
     const META_KEY_PASSCODE    = '_html_page_passcode';     // hashed passcode (wp_hash_password)
     const META_KEY_ACCESS_LOG  = '_html_page_access_log';   // capped list of recent view events
 
-    const VERSION       = '3.0.0';
+    const VERSION       = '3.0.1';
     const COOKIE_PREFIX = 'html_page_access_';   // per-page access cookie
     const ACCESS_TTL    = 43200;                 // access cookie / session lifetime (12h)
     const MAX_PW_TRIES  = 8;                      // passcode attempts before cooldown
@@ -2633,6 +2633,18 @@ class HTML_To_WordPress_Page {
     }
 
     /**
+     * Cache-busting version for an asset: plugin version + the file's mtime.
+     * Version alone is not enough — an asset edited without a version bump
+     * (hotfix, or repeated deploys of the same version) would keep serving
+     * the browser's stale copy from the identical ?ver= URL.
+     */
+    private function asset_version($file) {
+        $path = plugin_dir_path(__FILE__) . $file;
+        $mtime = @filemtime($path);
+        return $mtime ? self::VERSION . '.' . $mtime : self::VERSION;
+    }
+
+    /**
      * Enqueue admin scripts and styles
      */
     public function admin_scripts($hook) {
@@ -2644,7 +2656,7 @@ class HTML_To_WordPress_Page {
                     'html-to-wp-page-admin',
                     plugin_dir_url(__FILE__) . 'admin-style.css',
                     array(),
-                    self::VERSION
+                    $this->asset_version('admin-style.css')
                 );
                 return;
             }
@@ -2659,14 +2671,14 @@ class HTML_To_WordPress_Page {
             'html-to-wp-page-admin',
             plugin_dir_url(__FILE__) . 'admin-style.css',
             array(),
-            self::VERSION
+            $this->asset_version('admin-style.css')
         );
 
         wp_enqueue_script(
             'html-to-wp-page-admin',
             plugin_dir_url(__FILE__) . 'admin-script.js',
             array('jquery'),
-            self::VERSION,
+            $this->asset_version('admin-script.js'),
             true
         );
 
