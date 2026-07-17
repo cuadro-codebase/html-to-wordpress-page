@@ -2047,6 +2047,36 @@
 }
 .html-share-flipped svg { width: 14px; height: 14px; flex: 0 0 auto; }
 
+/* Page is Public -> the password/token is bypassed. Say so loudly. */
+.html-share-warnbox {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 0 0 16px;
+    padding: 10px 12px;
+    background: var(--hp-amber-bg);
+    border: 1px solid #ecd9a3;
+    border-left: 3px solid var(--hp-amber-ln);
+    border-radius: 8px;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: #6b5410;
+}
+.html-share-warnbox svg { width: 14px; height: 14px; flex: 0 0 auto; margin-top: 2px; }
+
+/* Dismiss button becomes a real "Done" once the share is saved. */
+.html-modal-cancel.html-modal-done {
+    background: var(--hp-ok) !important;
+    border-color: var(--hp-ok) !important;
+    color: #fff !important;
+    text-shadow: none !important;
+    box-shadow: none !important;
+}
+.html-modal-cancel.html-modal-done:hover {
+    background: #15682c !important;
+    border-color: #15682c !important;
+}
+
 .html-share-field { margin-bottom: 14px; }
 .html-share-field label {
     display: block;

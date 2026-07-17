@@ -692,6 +692,8 @@
             $modalConfirm.prop('disabled', false).removeClass('is-loading');
             $modalConfirm.toggle(config.showConfirm !== false);
             $modal.toggleClass('is-wide', !!config.wide);
+            // Dismiss button starts as "Cancel"; flows that finish an action swap it to "Done".
+            $modalCancel.text('Cancel').removeClass('button-primary html-modal-done');
             $modalBackdrop.css('display', 'flex');
         }
 
@@ -1236,6 +1238,8 @@
                     $choices.slideUp(120);
                     $body.find('.html-share-expiry').slideUp(120, function() { $(this).remove(); });
                     $result.html(buildResult(res.data)).slideDown(120);
+                    // The share is already saved at this point — "Cancel" would be a lie.
+                    $modalCancel.text('Done').addClass('button-primary html-modal-done');
                 }).fail(function() {
                     $choices.removeClass('is-loading');
                     if (always) always();
@@ -1244,18 +1248,16 @@
             }
 
             function buildResult(d) {
-                // Sharing gates the page — reflect that on the row toggle immediately.
-                var flipped = false;
-                if (d.visibility) {
-                    var $row = table.find('tr[data-id="' + id + '"]');
-                    flipped = ($row.attr('data-visibility') !== d.visibility);
-                    setRowVisibility(id, d.visibility);
-                }
+                // Sharing never changes the toggle. But if the page is Public, the
+                // password/token is bypassed — say so plainly instead of implying
+                // the page is protected when it is not.
+                if (d.visibility) setRowVisibility(id, d.visibility);
+                var isPublic = (d.visibility === 'public');
 
-                var html = flipped
-                    ? '<p class="html-share-flipped">' +
-                        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>' +
-                        '<span>Switched to <strong>Private</strong> so the protection applies.</span>' +
+                var html = isPublic
+                    ? '<p class="html-share-warnbox">' +
+                        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>' +
+                        '<span>This page is <strong>Public</strong>, so anyone with the URL can open it <em>without</em> this. Switch the Visibility toggle to <strong>Private</strong> for it to apply.</span>' +
                       '</p>'
                     : '';
 

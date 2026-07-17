@@ -2,7 +2,7 @@
 /**
  * Plugin Name: HTML to WordPress Page
  * Description: Create standalone HTML pages without WordPress theme header/footer. Perfect for uploading AI-generated HTML.
- * Version: 3.0.4
+ * Version: 3.1.0
  * Author: Cuadro Studio
  * Author URI: https://www.cuadrostudio.com
  * License: GPL v2 or later
@@ -32,7 +32,7 @@ class HTML_To_WordPress_Page {
     const META_KEY_PASSCODE    = '_html_page_passcode';     // hashed passcode (wp_hash_password)
     const META_KEY_ACCESS_LOG  = '_html_page_access_log';   // capped list of recent view events
 
-    const VERSION       = '3.0.4';
+    const VERSION       = '3.1.0';
     const COOKIE_PREFIX = 'html_page_access_';   // per-page access cookie
     const ACCESS_TTL    = 43200;                 // access cookie / session lifetime (12h)
     const MAX_PW_TRIES  = 8;                      // passcode attempts before cooldown
@@ -1667,8 +1667,10 @@ class HTML_To_WordPress_Page {
         $method = isset($_POST['method']) ? sanitize_text_field($_POST['method']) : '';
         $post = get_post($id);
 
-        // Sharing means the page is gated: force it private.
-        update_post_meta($id, self::META_KEY_VISIBILITY, 'private');
+        // Sharing sets HOW a private page is unlocked. It must not touch the
+        // Private/Public toggle — that stays the admin's explicit choice, and a
+        // Public page ignores the password/token entirely (public wins).
+        $visibility = $this->get_visibility($id);
 
         if ($method === 'password') {
             update_post_meta($id, self::META_KEY_PROTECTION, 'password');
@@ -1678,7 +1680,7 @@ class HTML_To_WordPress_Page {
                 'method'     => 'password',
                 'password'   => $password,
                 'url'        => $this->share_base_url($post),
-                'visibility' => 'private', // sharing always gates the page
+                'visibility' => $visibility,
             ));
         }
 
@@ -1707,7 +1709,7 @@ class HTML_To_WordPress_Page {
                 'url'             => $this->share_url_for_token($post, $link['token']),
                 'expires'         => (int) $expires,
                 'expires_display' => $this->expiry_display($expires),
-                'visibility'      => 'private', // sharing always gates the page
+                'visibility'      => $visibility,
             ));
         }
 
