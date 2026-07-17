@@ -1743,12 +1743,20 @@
 .html-vis-switch.is-loading .html-vis-ico,
 .html-vis-switch.is-loading .html-vis-text { opacity: .45; }
 
-/* ---- Actions cell: one labeled primary + compact icon buttons ---- */
+/* ---- Actions cell: one labeled primary + compact icon buttons ----
+   These cells hold fixed-size controls, so they get px widths in the <th>
+   (see the table markup) plus a hard min-width floor here. A % width on a
+   table-layout:fixed table shrinks with the viewport and the buttons spill. */
+#html-pages-table th:last-child,
+#html-pages-table td.html-actions-cell { min-width: 240px; }
+#html-pages-table td.html-visibility-cell { min-width: 120px; }
+
 .html-actions-cell {
     display: flex;
     align-items: center;
     gap: 3px;
     white-space: nowrap;
+    overflow: visible;
 }
 
 .html-share-btn {

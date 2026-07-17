@@ -1,8 +1,8 @@
-<?php
+﻿<?php
 /**
  * Plugin Name: HTML to WordPress Page
  * Description: Create standalone HTML pages without WordPress theme header/footer. Perfect for uploading AI-generated HTML.
- * Version: 3.0.2
+ * Version: 3.0.3
  * Author: Cuadro Studio
  * Author URI: https://www.cuadrostudio.com
  * License: GPL v2 or later
@@ -32,7 +32,7 @@ class HTML_To_WordPress_Page {
     const META_KEY_PASSCODE    = '_html_page_passcode';     // hashed passcode (wp_hash_password)
     const META_KEY_ACCESS_LOG  = '_html_page_access_log';   // capped list of recent view events
 
-    const VERSION       = '3.0.2';
+    const VERSION       = '3.0.3';
     const COOKIE_PREFIX = 'html_page_access_';   // per-page access cookie
     const ACCESS_TTL    = 43200;                 // access cookie / session lifetime (12h)
     const MAX_PW_TRIES  = 8;                      // passcode attempts before cooldown
@@ -99,7 +99,7 @@ class HTML_To_WordPress_Page {
         add_action('wp_ajax_html_page_setup_share', array($this, 'ajax_setup_share'));
         add_action('wp_ajax_html_page_bulk_visibility', array($this, 'ajax_bulk_visibility'));
 
-        // Discoverability suppression — keep confidential pages out of every crawl surface
+        // Discoverability suppression â€” keep confidential pages out of every crawl surface
         add_filter('wp_robots', array($this, 'filter_wp_robots'));
         add_filter('wp_sitemaps_posts_query_args', array($this, 'filter_core_sitemap_args'), 10, 2);
         add_filter('wpseo_sitemap_exclude_post', array($this, 'filter_yoast_sitemap_exclude'), 10, 2); // legacy Yoast
@@ -107,7 +107,7 @@ class HTML_To_WordPress_Page {
         add_filter('rank_math/sitemap/exclude_post', array($this, 'filter_rankmath_sitemap_exclude'), 10, 2);
         add_action('pre_get_posts', array($this, 'exclude_from_search_and_feed'));
         add_filter('rest_page_query', array($this, 'filter_rest_page_query'), 10, 2);
-        // rest_page_query only covers collections — single reads and search need their own guards.
+        // rest_page_query only covers collections â€” single reads and search need their own guards.
         add_filter('rest_prepare_page', array($this, 'filter_rest_prepare_page'), 10, 3);
         add_filter('rest_post_search_query', array($this, 'filter_rest_search_query'), 10, 2);
         add_filter('oembed_response_data', array($this, 'filter_oembed_response'), 10, 2);
@@ -657,6 +657,12 @@ class HTML_To_WordPress_Page {
                 <button type="button" class="html-bulk-clear" id="html-bulk-clear" data-tooltip="Clear selection" aria-label="Clear selection">&times;</button>
             </div>
 
+            <?php
+            // Column widths: text columns use %, but Visibility and Actions use px.
+            // The table is table-layout:fixed and those two hold fixed-size controls â€”
+            // a % width shrinks below the controls on a narrow screen (wide sidebar,
+            // small window) and the buttons overflow the column.
+            ?>
             <table class="wp-list-table widefat fixed striped" id="html-pages-table">
                 <thead>
                     <tr>
@@ -673,42 +679,42 @@ class HTML_To_WordPress_Page {
                                 <span class="html-sort-arrow down">&#9660;</span>
                             </span>
                         </th>
-                        <th class="html-sortable" data-sort-key="slug" style="width: 13%;">
+                        <th class="html-sortable" data-sort-key="slug" style="width: 12%;">
                             <span class="html-sort-label">Slug</span>
                             <span class="html-sort-arrows" aria-hidden="true">
                                 <span class="html-sort-arrow up">&#9650;</span>
                                 <span class="html-sort-arrow down">&#9660;</span>
                             </span>
                         </th>
-                        <th class="html-sortable" data-sort-key="url" style="width: 19%;">
+                        <th class="html-sortable" data-sort-key="url" style="width: 18%;">
                             <span class="html-sort-label">URL</span>
                             <span class="html-sort-arrows" aria-hidden="true">
                                 <span class="html-sort-arrow up">&#9650;</span>
                                 <span class="html-sort-arrow down">&#9660;</span>
                             </span>
                         </th>
-                        <th class="html-sortable" data-sort-key="visibility" style="width: 10%;">
+                        <th class="html-sortable" data-sort-key="visibility" style="width: 130px;">
                             <span class="html-sort-label">Visibility</span>
                             <span class="html-sort-arrows" aria-hidden="true">
                                 <span class="html-sort-arrow up">&#9650;</span>
                                 <span class="html-sort-arrow down">&#9660;</span>
                             </span>
                         </th>
-                        <th class="html-sortable" data-sort-key="folder" style="width: 11%;">
+                        <th class="html-sortable" data-sort-key="folder" style="width: 10%;">
                             <span class="html-sort-label">Folder</span>
                             <span class="html-sort-arrows" aria-hidden="true">
                                 <span class="html-sort-arrow up">&#9650;</span>
                                 <span class="html-sort-arrow down">&#9660;</span>
                             </span>
                         </th>
-                        <th class="html-sortable" data-sort-key="created" style="width: 13%;">
+                        <th class="html-sortable" data-sort-key="created" style="width: 11%;">
                             <span class="html-sort-label">Created</span>
                             <span class="html-sort-arrows" aria-hidden="true">
                                 <span class="html-sort-arrow up">&#9650;</span>
                                 <span class="html-sort-arrow down">&#9660;</span>
                             </span>
                         </th>
-                        <th style="width: 15%;">Actions</th>
+                        <th style="width: 240px;">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -989,7 +995,7 @@ class HTML_To_WordPress_Page {
                 <a href="<?php echo esc_url($url); ?>" target="_blank" title="<?php echo esc_attr($url); ?>"><?php echo esc_html($url); ?></a>
             </td>
             <td class="html-visibility-cell">
-                <label class="html-vis-switch<?php echo $is_public ? ' is-public' : ''; ?>" data-tooltip="<?php echo $is_public ? 'Public — anyone with the URL can view (never indexed by Google)' : 'Private — only people you share with can view'; ?>">
+                <label class="html-vis-switch<?php echo $is_public ? ' is-public' : ''; ?>" data-tooltip="<?php echo $is_public ? 'Public â€” anyone with the URL can view (never indexed by Google)' : 'Private â€” only people you share with can view'; ?>">
                     <input type="checkbox" class="html-vis-toggle" data-id="<?php echo intval($page->ID); ?>" <?php checked($is_public); ?>>
                     <span class="html-vis-slider" aria-hidden="true"></span>
                     <span class="html-vis-ico" aria-hidden="true"><?php echo self::vis_icon($is_public); ?></span>
@@ -1027,7 +1033,7 @@ class HTML_To_WordPress_Page {
                     </span>
                     <span class="html-pin-spinner" aria-hidden="true"></span>
                 </button>
-                <button type="button" class="html-share-btn" data-id="<?php echo intval($page->ID); ?>" data-tooltip="Share this page — password or secret link">
+                <button type="button" class="html-share-btn" data-id="<?php echo intval($page->ID); ?>" data-tooltip="Share this page â€” password or secret link">
                     <span class="html-share-btn-icon" aria-hidden="true">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="2.6"/><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="19" r="2.6"/><line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/><line x1="15.4" y1="6.5" x2="8.6" y2="10.5"/></svg>
                     </span>
@@ -1208,7 +1214,7 @@ class HTML_To_WordPress_Page {
         if (in_array(strtolower($name), $existing_lower, true) || in_array(strtolower($name), $all_existing_lower, true)) {
             wp_send_json_error('A folder with this name already exists');
         }
-        $registered[] = $name; // append to end — user can drag to reorder
+        $registered[] = $name; // append to end â€” user can drag to reorder
         update_option('html_to_wp_page_folders', $registered);
 
         wp_send_json_success(array(
@@ -1219,7 +1225,7 @@ class HTML_To_WordPress_Page {
     }
 
     /**
-     * AJAX: rename a folder — updates every page in that folder.
+     * AJAX: rename a folder â€” updates every page in that folder.
      */
     public function ajax_rename_folder() {
         check_ajax_referer('html_page_search_nonce', 'nonce');
@@ -1320,7 +1326,7 @@ class HTML_To_WordPress_Page {
     }
 
     /**
-     * AJAX: delete a folder — all pages inside move to Unfiled.
+     * AJAX: delete a folder â€” all pages inside move to Unfiled.
      */
     public function ajax_delete_folder() {
         check_ajax_referer('html_page_search_nonce', 'nonce');
@@ -1356,7 +1362,7 @@ class HTML_To_WordPress_Page {
     }
 
     /**
-     * Sanitize a folder name — trim, strip tags, cap length, disallow ~~~ marker.
+     * Sanitize a folder name â€” trim, strip tags, cap length, disallow ~~~ marker.
      */
     private function sanitize_folder_name($raw) {
         $name = trim(sanitize_text_field($raw));
@@ -2175,7 +2181,7 @@ class HTML_To_WordPress_Page {
     }
 
     /**
-     * Render HTML page if enabled — now behind the access gate.
+     * Render HTML page if enabled â€” now behind the access gate.
      */
     public function render_html_page() {
         // Handle /html/slug/ URLs (backward compatibility)
@@ -2212,7 +2218,7 @@ class HTML_To_WordPress_Page {
         $post_id = $page->ID;
         $html_content = get_post_meta($post_id, self::META_KEY_CONTENT, true);
         if (empty($html_content)) {
-            return; // no content — let WP continue / caller handles 404
+            return; // no content â€” let WP continue / caller handles 404
         }
 
         $visibility = $this->get_visibility($post_id);
@@ -2236,7 +2242,7 @@ class HTML_To_WordPress_Page {
             $this->output_html($html_content, $post_id);
         }
 
-        // Internal: admins only (handled above) — everyone else gets a clean 404.
+        // Internal: admins only (handled above) â€” everyone else gets a clean 404.
         if ($visibility === 'internal') {
             $this->send_not_found();
         }
@@ -2247,7 +2253,7 @@ class HTML_To_WordPress_Page {
         // PASSWORD mode: gate lives at the canonical URL, no token needed.
         if ($protection === 'password') {
             if (!get_post_meta($post_id, self::META_KEY_PASSCODE, true)) {
-                // Password mode but no password set yet — locked to admins only.
+                // Password mode but no password set yet â€” locked to admins only.
                 $this->send_not_found();
             }
             $this->ensure_passcode($page, ''); // returns true (cookie/POST ok) or renders form + exits
@@ -2281,7 +2287,7 @@ class HTML_To_WordPress_Page {
                 $this->log_view($post_id, $links[$idx]);
                 $this->output_html($html_content, $post_id);
             }
-            // Expired / revoked / over view cap falls through to the same plain 404 below —
+            // Expired / revoked / over view cap falls through to the same plain 404 below â€”
             // a uniform response never reveals that a page exists here.
         }
 
@@ -2310,7 +2316,7 @@ class HTML_To_WordPress_Page {
         if ($pos !== false) {
             return substr_replace($html, $meta, $pos, 0);
         }
-        return $meta . $html; // no <head> — prepend
+        return $meta . $html; // no <head> â€” prepend
     }
 
     /** Generic 404 that does not confirm a page exists (enumeration resistance). */
@@ -2463,11 +2469,11 @@ class HTML_To_WordPress_Page {
     }
 
     /* ===================================================================
-     * Discoverability suppression — keep confidential pages out of crawls
+     * Discoverability suppression â€” keep confidential pages out of crawls
      * =================================================================== */
 
     /**
-     * IDs of every plugin page — ALL of them are hidden from crawlers/sitemaps/REST.
+     * IDs of every plugin page â€” ALL of them are hidden from crawlers/sitemaps/REST.
      * (Plugin pages are never indexable, by design.) Cached per-request.
      */
     private function get_hidden_page_ids() {
@@ -2586,7 +2592,7 @@ class HTML_To_WordPress_Page {
         return $args;
     }
 
-    /** No oEmbed payload (title/author) for plugin pages — empty data makes core 404. */
+    /** No oEmbed payload (title/author) for plugin pages â€” empty data makes core 404. */
     public function filter_oembed_response($data, $post) {
         if ($post && $this->is_html_page($post->ID)) {
             return array();
@@ -2634,7 +2640,7 @@ class HTML_To_WordPress_Page {
 
     /**
      * Cache-busting version for an asset: plugin version + the file's mtime.
-     * Version alone is not enough — an asset edited without a version bump
+     * Version alone is not enough â€” an asset edited without a version bump
      * (hotfix, or repeated deploys of the same version) would keep serving
      * the browser's stale copy from the identical ?ver= URL.
      */
