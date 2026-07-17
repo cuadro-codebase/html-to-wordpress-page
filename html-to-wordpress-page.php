@@ -2,7 +2,7 @@
 /**
  * Plugin Name: HTML to WordPress Page
  * Description: Create standalone HTML pages without WordPress theme header/footer. Perfect for uploading AI-generated HTML.
- * Version: 2.11.0
+ * Version: 3.0.0
  * Author: Cuadro Studio
  * Author URI: https://www.cuadrostudio.com
  * License: GPL v2 or later
@@ -23,6 +23,21 @@ class HTML_To_WordPress_Page {
     const META_KEY_WP_FOOTER = '_html_page_wp_footer';
     const META_KEY_PINNED = '_html_page_pinned';
     const META_KEY_FOLDER = '_html_page_folder';
+
+    // Security / sharing (v3.0.0)
+    const META_KEY_VISIBILITY  = '_html_page_visibility';   // 'private' | 'public' | 'internal'
+    const META_KEY_ALLOW_INDEX = '_html_page_allow_index';  // '1' only when a public page may be indexed
+    const META_KEY_PROTECTION  = '_html_page_protection';   // 'token' | 'password' (legacy: link/link_password)
+    const META_KEY_SHARE_LINKS = '_html_page_share_links';  // array of link records (see new_share_link)
+    const META_KEY_PASSCODE    = '_html_page_passcode';     // hashed passcode (wp_hash_password)
+    const META_KEY_ACCESS_LOG  = '_html_page_access_log';   // capped list of recent view events
+
+    const VERSION       = '3.0.0';
+    const COOKIE_PREFIX = 'html_page_access_';   // per-page access cookie
+    const ACCESS_TTL    = 43200;                 // access cookie / session lifetime (12h)
+    const MAX_PW_TRIES  = 8;                      // passcode attempts before cooldown
+    const PW_LOCK_TTL   = 900;                    // passcode lockout window (15m)
+    const LOG_CAP       = 50;                     // access-log entries kept per page
 
     public function __construct() {
         register_activation_hook(__FILE__, array($this, 'activate'));
@@ -71,6 +86,132 @@ class HTML_To_WordPress_Page {
         // Keep /html/ URLs working for backward compatibility
         add_action('init', array($this, 'register_rewrite_rules'));
         add_filter('query_vars', array($this, 'add_query_vars'));
+
+        // --- Security / sharing (v3.0.0) ---
+
+        // Sharing + visibility AJAX
+        add_action('wp_ajax_html_page_set_visibility', array($this, 'ajax_set_visibility'));
+        add_action('wp_ajax_html_page_set_protection', array($this, 'ajax_set_protection'));
+        add_action('wp_ajax_html_page_set_passcode', array($this, 'ajax_set_passcode'));
+        add_action('wp_ajax_html_page_create_link', array($this, 'ajax_create_link'));
+        add_action('wp_ajax_html_page_revoke_link', array($this, 'ajax_revoke_link'));
+        add_action('wp_ajax_html_page_get_share', array($this, 'ajax_get_share'));
+        add_action('wp_ajax_html_page_setup_share', array($this, 'ajax_setup_share'));
+        add_action('wp_ajax_html_page_bulk_visibility', array($this, 'ajax_bulk_visibility'));
+
+        // Discoverability suppression — keep confidential pages out of every crawl surface
+        add_filter('wp_robots', array($this, 'filter_wp_robots'));
+        add_filter('wp_sitemaps_posts_query_args', array($this, 'filter_core_sitemap_args'), 10, 2);
+        add_filter('wpseo_sitemap_exclude_post', array($this, 'filter_yoast_sitemap_exclude'), 10, 2); // legacy Yoast
+        add_filter('wpseo_exclude_from_sitemap_by_post_ids', array($this, 'filter_yoast_exclude_ids'));
+        add_filter('rank_math/sitemap/exclude_post', array($this, 'filter_rankmath_sitemap_exclude'), 10, 2);
+        add_action('pre_get_posts', array($this, 'exclude_from_search_and_feed'));
+        add_filter('rest_page_query', array($this, 'filter_rest_page_query'), 10, 2);
+        // rest_page_query only covers collections — single reads and search need their own guards.
+        add_filter('rest_prepare_page', array($this, 'filter_rest_prepare_page'), 10, 3);
+        add_filter('rest_post_search_query', array($this, 'filter_rest_search_query'), 10, 2);
+        add_filter('oembed_response_data', array($this, 'filter_oembed_response'), 10, 2);
+    }
+
+    /* ===================================================================
+     * Security / sharing helpers
+     * =================================================================== */
+
+    /** Get a page's visibility, defaulting to 'private' for any plugin page. */
+    private function get_visibility($post_id) {
+        $v = get_post_meta($post_id, self::META_KEY_VISIBILITY, true);
+        if ($v === 'public' || $v === 'internal') {
+            return $v;
+        }
+        return 'private';
+    }
+
+    /**
+     * Protection mode for a private page: 'token' (secret link) or 'password'.
+     * Maps legacy values (link -> token, link_password -> password). Default: token.
+     */
+    private function get_protection($post_id) {
+        $p = get_post_meta($post_id, self::META_KEY_PROTECTION, true);
+        if ($p === 'password' || $p === 'link_password') return 'password';
+        return 'token'; // 'token', legacy 'link', empty
+    }
+
+    /** Is this post a plugin-managed HTML page? */
+    private function is_html_page($post_id) {
+        return get_post_meta($post_id, self::META_KEY_ENABLED, true) === '1';
+    }
+
+    /** Build a fresh share-link record. */
+    private function new_share_link($label = '', $expires = 0) {
+        return array(
+            'id'        => bin2hex(random_bytes(6)),
+            'token'     => bin2hex(random_bytes(16)), // 128-bit
+            'label'     => $this->sanitize_folder_name($label),
+            'created'   => time(),
+            'expires'   => (int) $expires,            // 0 = never
+            'max_views' => 0,                         // 0 = unlimited
+            'views'     => 0,
+            'revoked'   => 0,
+        );
+    }
+
+    /**
+     * Set a newly-created page to Private with one ready-to-send share link,
+     * so it is secure by default yet immediately shareable.
+     */
+    private function init_page_sharing($post_id) {
+        if (get_post_meta($post_id, self::META_KEY_VISIBILITY, true) === '') {
+            update_post_meta($post_id, self::META_KEY_VISIBILITY, 'private');
+        }
+        if (get_post_meta($post_id, self::META_KEY_PROTECTION, true) === '') {
+            update_post_meta($post_id, self::META_KEY_PROTECTION, 'token');
+        }
+        if (empty($this->get_share_links($post_id))) {
+            $this->save_share_links($post_id, array($this->new_share_link('Share link')));
+        }
+    }
+
+    /** Return the stored share links for a page (always an array). */
+    private function get_share_links($post_id) {
+        $links = get_post_meta($post_id, self::META_KEY_SHARE_LINKS, true);
+        return is_array($links) ? $links : array();
+    }
+
+    private function save_share_links($post_id, $links) {
+        update_post_meta($post_id, self::META_KEY_SHARE_LINKS, array_values($links));
+    }
+
+    /** Public base URL (no token) for a page. */
+    private function share_base_url($post) {
+        return $this->get_page_url($post);
+    }
+
+    /** Full shareable URL for a given token. */
+    private function share_url_for_token($post, $token) {
+        return add_query_arg('hpk', $token, $this->share_base_url($post));
+    }
+
+    /** Find a live (non-revoked, non-expired, under-cap) link by token. Returns index or -1. */
+    private function find_valid_link($links, $token) {
+        if ($token === '') return -1;
+        $now = time();
+        foreach ($links as $i => $l) {
+            if (!empty($l['revoked'])) continue;
+            if (!hash_equals((string) $l['token'], (string) $token)) continue;
+            if (!empty($l['expires']) && $now > (int) $l['expires']) return -2; // expired
+            if (!empty($l['max_views']) && (int) $l['views'] >= (int) $l['max_views']) return -2;
+            return $i;
+        }
+        return -1;
+    }
+
+    /** Signed value stored in the access cookie so it can't be forged. */
+    private function access_cookie_value($post_id, $token) {
+        return hash_hmac('sha256', $post_id . '|' . $token, wp_salt('auth'));
+    }
+
+    private function access_cookie_name($post_id) {
+        return self::COOKIE_PREFIX . $post_id;
     }
 
     /**
@@ -78,6 +219,7 @@ class HTML_To_WordPress_Page {
      */
     public function activate() {
         $this->migrate_existing_pages();
+        $this->migrate_security_defaults();
         $this->register_rewrite_rules();
         flush_rewrite_rules();
     }
@@ -86,13 +228,59 @@ class HTML_To_WordPress_Page {
      * Check if migration needs to run (for plugin updates)
      */
     public function check_migration() {
-        $current_version = '2.11.0';
+        $current_version = self::VERSION;
         $installed_version = get_option('html_to_wp_page_version', '0');
 
         if (version_compare($installed_version, $current_version, '<')) {
             $this->migrate_existing_pages();
+
+            // v3.0.0: lock every existing page down to Private (was public + indexed).
+            if (version_compare($installed_version, '3.0.0', '<')) {
+                $this->migrate_security_defaults();
+            }
+
             update_option('html_to_wp_page_version', $current_version);
             flush_rewrite_rules();
+        }
+    }
+
+    /**
+     * v3.0.0 security migration: every existing HTML page becomes Private,
+     * protected by link + password, and gets one initial share link.
+     * Their old public URLs then return a plain 404, which de-indexes them.
+     */
+    private function migrate_security_defaults() {
+        $ids = get_posts(array(
+            'post_type'      => 'page',
+            'post_status'    => 'publish',
+            'posts_per_page' => -1,
+            'fields'         => 'ids',
+            'meta_query'     => array(array(
+                'key'     => self::META_KEY_ENABLED,
+                'value'   => '1',
+                'compare' => '=',
+            )),
+            'suppress_filters' => true,
+        ));
+
+        $count = 0;
+        foreach ($ids as $id) {
+            // Skip pages already migrated (visibility already set).
+            if (get_post_meta($id, self::META_KEY_VISIBILITY, true) !== '') {
+                continue;
+            }
+            update_post_meta($id, self::META_KEY_VISIBILITY, 'private');
+            update_post_meta($id, self::META_KEY_PROTECTION, 'token');
+
+            // Give each page one ready-to-send link so nothing becomes unreachable.
+            if (empty($this->get_share_links($id))) {
+                $this->save_share_links($id, array($this->new_share_link('Initial link')));
+            }
+            $count++;
+        }
+
+        if ($count > 0) {
+            set_transient('html_page_security_migration_notice', $count, 120);
         }
     }
 
@@ -238,6 +426,23 @@ class HTML_To_WordPress_Page {
     }
 
     /**
+     * Show the v3.0.0 security lock-down notice.
+     */
+    public function show_security_migration_notice() {
+        $count = get_transient('html_page_security_migration_notice');
+        if ($count) {
+            delete_transient('html_page_security_migration_notice');
+            $list_url = admin_url('admin.php?page=html-to-wp-page');
+            $message = sprintf(
+                'HTML to WordPress Page 3.0: %d page(s) were set to <strong>Private</strong> and are now hidden from search engines. Their old public links will no longer work &mdash; open each page to create a secure share link.',
+                intval($count)
+            );
+            echo '<div class="notice notice-warning is-dismissible"><p>' . wp_kses_post($message)
+                . ' <a href="' . esc_url($list_url) . '">Review pages</a></p></div>';
+        }
+    }
+
+    /**
      * Add admin menu (old style)
      */
     public function add_admin_menu() {
@@ -271,6 +476,7 @@ class HTML_To_WordPress_Page {
 
         // Show migration notice
         add_action('admin_notices', array($this, 'show_migration_notice'));
+        add_action('admin_notices', array($this, 'show_security_migration_notice'));
     }
 
     /**
@@ -301,7 +507,7 @@ class HTML_To_WordPress_Page {
             <a href="<?php echo admin_url('admin.php?page=html-to-wp-page-new'); ?>" class="page-title-action">Add New</a>
             <button type="button" class="page-title-action" id="html-import-toggle">Import</button>
             <?php if (!empty($pages)): ?>
-                <a href="<?php echo wp_nonce_url(admin_url('admin.php?page=html-to-wp-page&action=download_all'), 'download_all_html_pages'); ?>" class="page-title-action">Download All</a>
+                <a href="<?php echo wp_nonce_url(admin_url('admin.php?page=html-to-wp-page&action=download_all'), 'download_all_html_pages'); ?>" class="page-title-action" data-tooltip="Export every HTML page as a .zip">Export</a>
             <?php endif; ?>
             <button type="button" class="page-title-action html-filter-toggle" id="html-filter-toggle" aria-expanded="false">
                 <span class="html-filter-toggle-icon" aria-hidden="true">
@@ -337,6 +543,15 @@ class HTML_To_WordPress_Page {
                             <option value="">Any</option>
                             <option value="pinned">Pinned only</option>
                             <option value="unpinned">Unpinned only</option>
+                        </select>
+                    </div>
+                    <div class="html-filter-field">
+                        <label for="html-filter-visibility">Visibility</label>
+                        <select id="html-filter-visibility">
+                            <option value="">Any</option>
+                            <option value="private">Private</option>
+                            <option value="internal">Internal</option>
+                            <option value="public">Public</option>
                         </select>
                     </div>
                 </div>
@@ -410,6 +625,14 @@ class HTML_To_WordPress_Page {
             <div class="html-bulk-bar" id="html-bulk-bar" style="display:none;" aria-live="polite">
                 <span class="html-bulk-count"><span class="html-bulk-count-n">0</span> selected</span>
                 <div class="html-bulk-actions">
+                    <button type="button" class="button html-bulk-btn" id="html-bulk-private" data-tooltip="Set selected pages to Private (hidden from search)">
+                        <span class="html-bulk-btn-label">Make private</span>
+                        <span class="html-bulk-btn-spinner" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" class="button html-bulk-btn" id="html-bulk-public" data-tooltip="Set selected pages to Public">
+                        <span class="html-bulk-btn-label">Make public</span>
+                        <span class="html-bulk-btn-spinner" aria-hidden="true"></span>
+                    </button>
                     <button type="button" class="button html-bulk-btn" id="html-bulk-move" data-tooltip="Move selected pages to a folder">
                         <span class="html-bulk-btn-label">Move to folder&hellip;</span>
                         <span class="html-bulk-btn-spinner" aria-hidden="true"></span>
@@ -443,14 +666,14 @@ class HTML_To_WordPress_Page {
                                 <span class="html-check-box" aria-hidden="true"></span>
                             </label>
                         </th>
-                        <th class="html-sortable" data-sort-key="title" style="width: 20%;">
+                        <th class="html-sortable" data-sort-key="title" style="width: 19%;">
                             <span class="html-sort-label">Title</span>
                             <span class="html-sort-arrows" aria-hidden="true">
                                 <span class="html-sort-arrow up">&#9650;</span>
                                 <span class="html-sort-arrow down">&#9660;</span>
                             </span>
                         </th>
-                        <th class="html-sortable" data-sort-key="slug" style="width: 14%;">
+                        <th class="html-sortable" data-sort-key="slug" style="width: 13%;">
                             <span class="html-sort-label">Slug</span>
                             <span class="html-sort-arrows" aria-hidden="true">
                                 <span class="html-sort-arrow up">&#9650;</span>
@@ -464,27 +687,34 @@ class HTML_To_WordPress_Page {
                                 <span class="html-sort-arrow down">&#9660;</span>
                             </span>
                         </th>
-                        <th class="html-sortable" data-sort-key="folder" style="width: 12%;">
+                        <th class="html-sortable" data-sort-key="visibility" style="width: 10%;">
+                            <span class="html-sort-label">Visibility</span>
+                            <span class="html-sort-arrows" aria-hidden="true">
+                                <span class="html-sort-arrow up">&#9650;</span>
+                                <span class="html-sort-arrow down">&#9660;</span>
+                            </span>
+                        </th>
+                        <th class="html-sortable" data-sort-key="folder" style="width: 11%;">
                             <span class="html-sort-label">Folder</span>
                             <span class="html-sort-arrows" aria-hidden="true">
                                 <span class="html-sort-arrow up">&#9650;</span>
                                 <span class="html-sort-arrow down">&#9660;</span>
                             </span>
                         </th>
-                        <th class="html-sortable" data-sort-key="created" style="width: 12%;">
+                        <th class="html-sortable" data-sort-key="created" style="width: 13%;">
                             <span class="html-sort-label">Created</span>
                             <span class="html-sort-arrows" aria-hidden="true">
                                 <span class="html-sort-arrow up">&#9650;</span>
                                 <span class="html-sort-arrow down">&#9660;</span>
                             </span>
                         </th>
-                        <th style="width: 19%;">Actions</th>
+                        <th style="width: 15%;">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if (empty($pages)): ?>
                         <tr>
-                            <td colspan="7">No HTML pages found. <a href="<?php echo admin_url('admin.php?page=html-to-wp-page-new'); ?>">Create one</a></td>
+                            <td colspan="8">No HTML pages found. <a href="<?php echo admin_url('admin.php?page=html-to-wp-page-new'); ?>">Create one</a></td>
                         </tr>
                     <?php else: ?>
                         <?php foreach ($pages as $page): ?>
@@ -701,6 +931,14 @@ class HTML_To_WordPress_Page {
         return $stats;
     }
 
+    /** Lock (private) / globe (public) glyph for the visibility switch. */
+    private static function vis_icon($is_public) {
+        if ($is_public) {
+            return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18"/></svg>';
+        }
+        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7.5a4 4 0 0 1 8 0V11"/></svg>';
+    }
+
     /**
      * Render a single row for the list table (server-side parity with AJAX).
      */
@@ -720,6 +958,10 @@ class HTML_To_WordPress_Page {
         // Folder sort key: put "Unfiled" (empty) last when ASC by using a high-sort char.
         $folder_sort_key = $folder === '' ? '~~~unfiled' : strtolower($folder);
 
+        // Visibility (Private is the safe default). Public = ON toggle.
+        $visibility = $this->get_visibility($page->ID);
+        $is_public  = ($visibility === 'public');
+
         ob_start();
         ?>
         <tr data-id="<?php echo intval($page->ID); ?>"
@@ -730,6 +972,7 @@ class HTML_To_WordPress_Page {
             data-url="<?php echo esc_attr(strtolower($url)); ?>"
             data-folder="<?php echo esc_attr($folder); ?>"
             data-folder-sort="<?php echo esc_attr($folder_sort_key); ?>"
+            data-visibility="<?php echo esc_attr($visibility); ?>"
             class="<?php echo $is_pinned ? 'html-row-pinned' : ''; ?>">
             <td class="html-check-col">
                 <label class="html-check-label" data-tooltip="Select this page">
@@ -741,9 +984,18 @@ class HTML_To_WordPress_Page {
                 <?php if ($is_pinned): ?><span class="html-pinned-marker" data-tooltip="Pinned to top">&#128204;</span> <?php endif; ?>
                 <strong><?php echo esc_html($page->post_title); ?></strong>
             </td>
-            <td><code><?php echo esc_html($page->post_name); ?></code></td>
-            <td>
-                <a href="<?php echo esc_url($url); ?>" target="_blank"><?php echo esc_html($url); ?></a>
+            <td class="html-slug-cell"><code title="<?php echo esc_attr($page->post_name); ?>"><?php echo esc_html($page->post_name); ?></code></td>
+            <td class="html-url-cell">
+                <a href="<?php echo esc_url($url); ?>" target="_blank" title="<?php echo esc_attr($url); ?>"><?php echo esc_html($url); ?></a>
+            </td>
+            <td class="html-visibility-cell">
+                <label class="html-vis-switch<?php echo $is_public ? ' is-public' : ''; ?>" data-tooltip="<?php echo $is_public ? 'Public — anyone with the URL can view (never indexed by Google)' : 'Private — only people you share with can view'; ?>">
+                    <input type="checkbox" class="html-vis-toggle" data-id="<?php echo intval($page->ID); ?>" <?php checked($is_public); ?>>
+                    <span class="html-vis-slider" aria-hidden="true"></span>
+                    <span class="html-vis-ico" aria-hidden="true"><?php echo self::vis_icon($is_public); ?></span>
+                    <span class="html-vis-text"><?php echo $is_public ? 'Public' : 'Private'; ?></span>
+                    <span class="html-vis-spin" aria-hidden="true"></span>
+                </label>
             </td>
             <td class="html-folder-cell">
                 <button type="button"
@@ -775,13 +1027,26 @@ class HTML_To_WordPress_Page {
                     </span>
                     <span class="html-pin-spinner" aria-hidden="true"></span>
                 </button>
-                <a href="<?php echo admin_url('admin.php?page=html-to-wp-page-new&id=' . $page->ID); ?>" data-tooltip="Edit in plugin editor">Edit</a> |
-                <a href="<?php echo get_edit_post_link($page->ID); ?>" data-tooltip="Open in WordPress editor">WP Edit</a> |
-                <a href="<?php echo wp_nonce_url(admin_url('admin.php?page=html-to-wp-page&action=download&id=' . $page->ID), 'download_html_page_' . $page->ID); ?>" data-tooltip="Download as .html file">Download</a> |
-                <a href="<?php echo wp_nonce_url(admin_url('admin.php?page=html-to-wp-page&action=delete&id=' . $page->ID), 'delete_html_page_' . $page->ID); ?>"
+                <button type="button" class="html-share-btn" data-id="<?php echo intval($page->ID); ?>" data-tooltip="Share this page — password or secret link">
+                    <span class="html-share-btn-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="2.6"/><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="19" r="2.6"/><line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/><line x1="15.4" y1="6.5" x2="8.6" y2="10.5"/></svg>
+                    </span>
+                    Share
+                </button>
+                <a class="html-iconbtn" href="<?php echo admin_url('admin.php?page=html-to-wp-page-new&id=' . $page->ID); ?>" data-tooltip="Edit content &amp; sharing" aria-label="Edit">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+                </a>
+                <a class="html-iconbtn html-iconbtn-wp" href="<?php echo get_edit_post_link($page->ID); ?>" data-tooltip="Open in the WordPress editor" aria-label="WordPress editor">
+                    <span class="dashicons dashicons-wordpress" aria-hidden="true"></span>
+                </a>
+                <a class="html-iconbtn" href="<?php echo wp_nonce_url(admin_url('admin.php?page=html-to-wp-page&action=download&id=' . $page->ID), 'download_html_page_' . $page->ID); ?>" data-tooltip="Download as .html file" aria-label="Download">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                </a>
+                <a class="html-iconbtn is-danger" href="<?php echo wp_nonce_url(admin_url('admin.php?page=html-to-wp-page&action=delete&id=' . $page->ID), 'delete_html_page_' . $page->ID); ?>"
                    onclick="return confirm('Are you sure you want to delete this page?');"
-                   data-tooltip="Move page to trash"
-                   style="color: #a00;">Delete</a>
+                   data-tooltip="Move page to trash" aria-label="Delete">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>
+                </a>
             </td>
         </tr>
         <?php
@@ -820,6 +1085,9 @@ class HTML_To_WordPress_Page {
      */
     public function ajax_search_pages() {
         check_ajax_referer('html_page_search_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
 
         $term = isset($_POST['term']) ? sanitize_text_field($_POST['term']) : '';
         $folder_key = isset($_POST['folder']) ? sanitize_text_field(wp_unslash($_POST['folder'])) : '__all';
@@ -828,6 +1096,7 @@ class HTML_To_WordPress_Page {
         $date_to   = isset($_POST['date_to']) ? sanitize_text_field($_POST['date_to']) : '';
         $author_id = isset($_POST['author']) ? intval($_POST['author']) : 0;
         $pinned    = isset($_POST['pinned']) ? sanitize_text_field($_POST['pinned']) : ''; // '', 'pinned', 'unpinned'
+        $vis_filter = isset($_POST['visibility']) ? sanitize_text_field($_POST['visibility']) : ''; // '', private, internal, public
 
         // Validate date strings (YYYY-MM-DD).
         $date_from_ok = ($date_from !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_from));
@@ -862,6 +1131,13 @@ class HTML_To_WordPress_Page {
             $pages = array_values(array_filter($pages, function($p) { return $p->__pin_ts > 0; }));
         } elseif ($pinned === 'unpinned') {
             $pages = array_values(array_filter($pages, function($p) { return $p->__pin_ts == 0; }));
+        }
+
+        // Post-filter: visibility.
+        if (in_array($vis_filter, array('private', 'internal', 'public'), true)) {
+            $pages = array_values(array_filter($pages, function($p) use ($vis_filter) {
+                return $this->get_visibility($p->ID) === $vis_filter;
+            }));
         }
 
         $rows_html = '';
@@ -1257,6 +1533,9 @@ class HTML_To_WordPress_Page {
      */
     public function ajax_import_page() {
         check_ajax_referer('html_page_search_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
 
         $title = isset($_POST['title']) ? sanitize_text_field($_POST['title']) : '';
         $html  = isset($_POST['html']) ? $_POST['html'] : '';
@@ -1285,6 +1564,7 @@ class HTML_To_WordPress_Page {
 
         update_post_meta($page_id, self::META_KEY_CONTENT, $html);
         update_post_meta($page_id, self::META_KEY_ENABLED, '1');
+        $this->init_page_sharing($page_id);
 
         $page = get_post($page_id);
         $url  = $this->get_page_url($page);
@@ -1294,6 +1574,275 @@ class HTML_To_WordPress_Page {
             'slug'  => esc_html($page->post_name),
             'url'   => esc_url($url),
             'edit_url' => admin_url('admin.php?page=html-to-wp-page-new&id=' . $page_id),
+        ));
+    }
+
+    /* ===================================================================
+     * Sharing & visibility AJAX
+     * =================================================================== */
+
+    /** Validate a single incoming HTML-page id; returns 0 if invalid. */
+    private function valid_html_page_id($raw) {
+        $id = intval($raw);
+        if ($id <= 0) return 0;
+        $post = get_post($id);
+        if (!$post || $post->post_type !== 'page') return 0;
+        if (!$this->is_html_page($id)) return 0;
+        return $id;
+    }
+
+    /** Assemble the full share/visibility state for the edit UI. */
+    private function get_share_state($post) {
+        $post_id = $post->ID;
+        $out_links = array();
+        foreach ($this->get_share_links($post_id) as $l) {
+            if (!empty($l['revoked'])) continue;
+            $out_links[] = array(
+                'id'      => $l['id'],
+                'label'   => $l['label'],
+                'url'     => $this->share_url_for_token($post, $l['token']),
+                'created' => (int) $l['created'],
+                'expires' => (int) $l['expires'],
+                'expired' => (!empty($l['expires']) && time() > (int) $l['expires']),
+                'views'   => (int) $l['views'],
+            );
+        }
+        return array(
+            'id'           => $post_id,
+            'visibility'   => $this->get_visibility($post_id),
+            'protection'   => $this->get_protection($post_id),
+            'has_passcode' => (bool) get_post_meta($post_id, self::META_KEY_PASSCODE, true),
+            'base_url'     => $this->share_base_url($post),
+            'links'        => $out_links,
+        );
+    }
+
+    public function ajax_get_share() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+        if (!current_user_can('manage_options')) wp_send_json_error('Unauthorized');
+        $id = $this->valid_html_page_id(isset($_POST['id']) ? $_POST['id'] : 0);
+        if (!$id) wp_send_json_error('Invalid page');
+        wp_send_json_success($this->get_share_state(get_post($id)));
+    }
+
+    public function ajax_set_visibility() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+        if (!current_user_can('manage_options')) wp_send_json_error('Unauthorized');
+        $id = $this->valid_html_page_id(isset($_POST['id']) ? $_POST['id'] : 0);
+        if (!$id) wp_send_json_error('Invalid page');
+
+        $vis = isset($_POST['visibility']) ? sanitize_text_field($_POST['visibility']) : 'private';
+        if (!in_array($vis, array('private', 'public', 'internal'), true)) $vis = 'private';
+        update_post_meta($id, self::META_KEY_VISIBILITY, $vis);
+        wp_send_json_success($this->get_share_state(get_post($id)));
+    }
+
+    public function ajax_set_protection() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+        if (!current_user_can('manage_options')) wp_send_json_error('Unauthorized');
+        $id = $this->valid_html_page_id(isset($_POST['id']) ? $_POST['id'] : 0);
+        if (!$id) wp_send_json_error('Invalid page');
+        $mode = isset($_POST['protection']) ? sanitize_text_field($_POST['protection']) : 'token';
+        if (!in_array($mode, array('token', 'password'), true)) $mode = 'token';
+        update_post_meta($id, self::META_KEY_PROTECTION, $mode);
+        wp_send_json_success($this->get_share_state(get_post($id)));
+    }
+
+    /**
+     * Set up a share method from the per-row Share modal.
+     * method=password -> make private, generate a strong password, return it once.
+     * method=token    -> make private, return a copyable tokenized URL.
+     */
+    public function ajax_setup_share() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+        if (!current_user_can('manage_options')) wp_send_json_error('Unauthorized');
+        $id = $this->valid_html_page_id(isset($_POST['id']) ? $_POST['id'] : 0);
+        if (!$id) wp_send_json_error('Invalid page');
+        $method = isset($_POST['method']) ? sanitize_text_field($_POST['method']) : '';
+        $post = get_post($id);
+
+        // Sharing means the page is gated: force it private.
+        update_post_meta($id, self::META_KEY_VISIBILITY, 'private');
+
+        if ($method === 'password') {
+            update_post_meta($id, self::META_KEY_PROTECTION, 'password');
+            $password = $this->generate_readable_password();
+            update_post_meta($id, self::META_KEY_PASSCODE, wp_hash_password($password));
+            wp_send_json_success(array(
+                'method'     => 'password',
+                'password'   => $password,
+                'url'        => $this->share_base_url($post),
+                'visibility' => 'private', // sharing always gates the page
+            ));
+        }
+
+        if ($method === 'token') {
+            $expires = $this->parse_expiry_input();
+            if ($expires === -1) {
+                wp_send_json_error('Pick an expiry time in the future.');
+            }
+
+            update_post_meta($id, self::META_KEY_PROTECTION, 'token');
+            $link = $this->get_or_create_active_link($id);
+
+            // Apply the chosen window to that link so the URL stays stable per page.
+            $links = $this->get_share_links($id);
+            foreach ($links as $i => $l) {
+                if ($l['id'] === $link['id']) {
+                    $links[$i]['expires'] = $expires;
+                    $link = $links[$i];
+                    break;
+                }
+            }
+            $this->save_share_links($id, $links);
+
+            wp_send_json_success(array(
+                'method'          => 'token',
+                'url'             => $this->share_url_for_token($post, $link['token']),
+                'expires'         => (int) $expires,
+                'expires_display' => $this->expiry_display($expires),
+                'visibility'      => 'private', // sharing always gates the page
+            ));
+        }
+
+        wp_send_json_error('Unknown share method');
+    }
+
+    /**
+     * Resolve expiry inputs from the Share modal into a unix timestamp.
+     * Returns 0 for "never", or -1 if the requested time is invalid/in the past.
+     */
+    private function parse_expiry_input() {
+        $mode = isset($_POST['exp_mode']) ? sanitize_text_field($_POST['exp_mode']) : 'never';
+
+        if ($mode === 'in') {
+            $amount = isset($_POST['exp_amount']) ? intval($_POST['exp_amount']) : 0;
+            $unit   = isset($_POST['exp_unit']) ? sanitize_text_field($_POST['exp_unit']) : 'days';
+            if ($amount < 1) return -1;
+            $mult = array(
+                'minutes' => MINUTE_IN_SECONDS,
+                'hours'   => HOUR_IN_SECONDS,
+                'days'    => DAY_IN_SECONDS,
+            );
+            if (!isset($mult[$unit])) $unit = 'days';
+            // Cap at 5 years so a typo can't mint an effectively permanent link.
+            $seconds = min($amount * $mult[$unit], 5 * YEAR_IN_SECONDS);
+            return time() + $seconds;
+        }
+
+        if ($mode === 'at') {
+            $at = isset($_POST['exp_at']) ? sanitize_text_field($_POST['exp_at']) : '';
+            // <input type="datetime-local"> gives YYYY-MM-DDTHH:MM in the admin's local time.
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/', $at)) return -1;
+            try {
+                $dt = new DateTime(str_replace('T', ' ', $at), wp_timezone());
+            } catch (Exception $e) {
+                return -1;
+            }
+            $ts = $dt->getTimestamp();
+            if ($ts <= time()) return -1;
+            return $ts;
+        }
+
+        return 0; // never expires
+    }
+
+    /** Human-readable expiry for the UI, in the site's timezone. */
+    private function expiry_display($ts) {
+        return $ts ? date_i18n('M j, Y g:i a', $ts) : '';
+    }
+
+    /** Generate a strong, human-copyable password like "quiet-amber-42-lynx". */
+    private function generate_readable_password() {
+        $adj  = array('amber','quiet','brave','swift','lunar','solar','coral','ivory','onyx','misty','noble','vivid','crisp','bold','fresh','keen');
+        $noun = array('lynx','falcon','otter','cedar','delta','harbor','maple','quartz','raven','willow','cobalt','ember','pine','tiger','heron','fox');
+        $pick = function($a) { return $a[random_int(0, count($a) - 1)]; };
+        return $pick($adj) . '-' . $pick($noun) . '-' . random_int(10, 99) . '-' . $pick($noun);
+    }
+
+    /** Return the most recent active (non-revoked, non-expired) link, creating one if none. */
+    private function get_or_create_active_link($post_id) {
+        $links = $this->get_share_links($post_id);
+        for ($i = count($links) - 1; $i >= 0; $i--) {
+            $l = $links[$i];
+            if (!empty($l['revoked'])) continue;
+            if (!empty($l['expires']) && time() > (int) $l['expires']) continue;
+            return $l;
+        }
+        $link = $this->new_share_link('Share link');
+        $links[] = $link;
+        $this->save_share_links($post_id, $links);
+        return $link;
+    }
+
+    public function ajax_set_passcode() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+        if (!current_user_can('manage_options')) wp_send_json_error('Unauthorized');
+        $id = $this->valid_html_page_id(isset($_POST['id']) ? $_POST['id'] : 0);
+        if (!$id) wp_send_json_error('Invalid page');
+        $pc = isset($_POST['passcode']) ? trim((string) wp_unslash($_POST['passcode'])) : '';
+        if ($pc === '') {
+            delete_post_meta($id, self::META_KEY_PASSCODE);
+        } else {
+            if (strlen($pc) > 200) $pc = substr($pc, 0, 200);
+            update_post_meta($id, self::META_KEY_PASSCODE, wp_hash_password($pc));
+        }
+        wp_send_json_success($this->get_share_state(get_post($id)));
+    }
+
+    public function ajax_create_link() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+        if (!current_user_can('manage_options')) wp_send_json_error('Unauthorized');
+        $id = $this->valid_html_page_id(isset($_POST['id']) ? $_POST['id'] : 0);
+        if (!$id) wp_send_json_error('Invalid page');
+        $label = isset($_POST['label']) ? wp_unslash($_POST['label']) : '';
+        $days  = isset($_POST['expires_days']) ? intval($_POST['expires_days']) : 0;
+        $expires = $days > 0 ? time() + ($days * DAY_IN_SECONDS) : 0;
+
+        $links = $this->get_share_links($id);
+        $links[] = $this->new_share_link($label, $expires);
+        $this->save_share_links($id, $links);
+        wp_send_json_success($this->get_share_state(get_post($id)));
+    }
+
+    public function ajax_revoke_link() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+        if (!current_user_can('manage_options')) wp_send_json_error('Unauthorized');
+        $id = $this->valid_html_page_id(isset($_POST['id']) ? $_POST['id'] : 0);
+        if (!$id) wp_send_json_error('Invalid page');
+        $link_id = isset($_POST['link_id']) ? sanitize_text_field($_POST['link_id']) : '';
+        $links = $this->get_share_links($id);
+        foreach ($links as $i => $l) {
+            if ($l['id'] === $link_id) {
+                $links[$i]['revoked'] = 1;
+            }
+        }
+        $this->save_share_links($id, $links);
+        wp_send_json_success($this->get_share_state(get_post($id)));
+    }
+
+    public function ajax_bulk_visibility() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+        if (!current_user_can('manage_options')) wp_send_json_error('Unauthorized');
+
+        $ids = $this->sanitize_bulk_ids(isset($_POST['ids']) ? $_POST['ids'] : array());
+        $vis = isset($_POST['visibility']) ? sanitize_text_field($_POST['visibility']) : 'private';
+        if (!in_array($vis, array('private', 'public', 'internal'), true)) $vis = 'private';
+        if (empty($ids)) wp_send_json_error('No valid pages selected');
+        $count = 0;
+        foreach ($ids as $id) {
+            update_post_meta($id, self::META_KEY_VISIBILITY, $vis);
+            if ($vis !== 'public' && empty($this->get_share_links($id))) {
+                // Ensure the page stays reachable via a link once locked down.
+                $this->save_share_links($id, array($this->new_share_link('Share link')));
+            }
+            $count++;
+        }
+        wp_send_json_success(array(
+            'affected'   => $count,
+            'ids'        => $ids,
+            'visibility' => $vis,
+            'stats'      => $this->get_folder_stats(),
         ));
     }
 
@@ -1373,6 +1922,7 @@ class HTML_To_WordPress_Page {
                             update_post_meta($new_page_id, self::META_KEY_ENABLED, '1');
                             update_post_meta($new_page_id, self::META_KEY_WP_HEAD, isset($_POST['wp_head_enabled']) ? '1' : '0');
                             update_post_meta($new_page_id, self::META_KEY_WP_FOOTER, isset($_POST['wp_footer_enabled']) ? '1' : '0');
+                            $this->init_page_sharing($new_page_id);
 
                             // Redirect to edit URL with ID so subsequent saves update correctly
                             wp_redirect(admin_url('admin.php?page=html-to-wp-page-new&id=' . $new_page_id . '&msg=created'));
@@ -1413,6 +1963,65 @@ class HTML_To_WordPress_Page {
                         <?php echo esc_html($this->get_page_url($page)); ?>
                     </a>
                 </div>
+
+                <?php // Sharing & Access panel (JS-rendered from initial state) ?>
+                <div id="html-share-panel" data-id="<?php echo intval($page->ID); ?>">
+                    <div class="html-share-head">
+                        <h2>Sharing &amp; Access</h2>
+                        <span class="html-share-badge" id="html-share-badge"></span>
+                    </div>
+
+                    <div class="html-share-section">
+                        <label class="html-share-legend">Who can view this page</label>
+                        <div class="html-share-vis" id="html-share-vis">
+                            <label class="html-share-radio"><input type="radio" name="hp_vis" value="private"> <span><strong>Private</strong> &mdash; only people you share with</span></label>
+                            <label class="html-share-radio"><input type="radio" name="hp_vis" value="internal"> <span><strong>Internal</strong> &mdash; logged-in admins only</span></label>
+                            <label class="html-share-radio"><input type="radio" name="hp_vis" value="public"> <span><strong>Public</strong> &mdash; anyone with the URL</span></label>
+                        </div>
+                        <p class="html-share-tip">This page is <strong>never</strong> indexed by search engines, in any mode.</p>
+                    </div>
+
+                    <div class="html-share-section" id="html-share-protection">
+                        <label class="html-share-legend">How private pages are protected</label>
+                        <div class="html-share-prot" id="html-share-prot">
+                            <label class="html-share-radio"><input type="radio" name="hp_prot" value="token"> <span><strong>Tokenized link</strong> &mdash; secret URL, bare URL 404s</span></label>
+                            <label class="html-share-radio"><input type="radio" name="hp_prot" value="password"> <span><strong>Password</strong> &mdash; page URL asks for a password</span></label>
+                        </div>
+                        <div class="html-share-passcode" id="html-share-passcode" style="display:none;">
+                            <div class="html-share-pc-field">
+                                <input type="password" id="hp_passcode" placeholder="Set a password" autocomplete="new-password">
+                                <button type="button" class="html-share-eye" tabindex="-1" data-tooltip="Show / hide" aria-label="Show or hide password">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                                </button>
+                            </div>
+                            <button type="button" class="button html-share-pc-save" id="hp_passcode_save">
+                                <span class="html-share-pc-save-label">Save password</span>
+                                <span class="html-share-pc-save-spinner" aria-hidden="true"></span>
+                            </button>
+                            <span class="html-share-pc-status" id="hp_passcode_status"></span>
+                        </div>
+                        <p class="html-share-tip">Tip: send the link and the password through <strong>different channels</strong> (link by email, password by text).</p>
+                    </div>
+
+                    <div class="html-share-section" id="html-share-links-section">
+                        <label class="html-share-legend">Share links</label>
+                        <div id="hp-links-list" class="html-share-links-list"></div>
+                        <div class="html-share-newlink">
+                            <input type="text" id="hp_link_label" placeholder="Label (e.g. Acme Corp)" maxlength="50">
+                            <select id="hp_link_expiry">
+                                <option value="0">No expiry</option>
+                                <option value="7">Expires in 7 days</option>
+                                <option value="30">Expires in 30 days</option>
+                                <option value="90">Expires in 90 days</option>
+                            </select>
+                            <button type="button" class="button button-primary html-share-addlink" id="hp_add_link">
+                                <span class="html-share-addlink-label">Create link</span>
+                                <span class="html-share-addlink-spinner" aria-hidden="true"></span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <script>window.htmlShareState = <?php echo wp_json_encode($this->get_share_state($page)); ?>;</script>
             <?php endif; ?>
 
             <form method="post" id="html-wp-form">
@@ -1566,28 +2175,17 @@ class HTML_To_WordPress_Page {
     }
 
     /**
-     * Render HTML page if enabled
+     * Render HTML page if enabled — now behind the access gate.
      */
     public function render_html_page() {
         // Handle /html/slug/ URLs (backward compatibility)
         $html_slug = get_query_var('html_page_slug');
         if (!empty($html_slug)) {
             $page = get_page_by_path($html_slug);
-            if ($page) {
-                $enabled = get_post_meta($page->ID, self::META_KEY_ENABLED, true);
-                $html_content = get_post_meta($page->ID, self::META_KEY_CONTENT, true);
-
-                if ($enabled === '1' && !empty($html_content)) {
-                    $html_content = $this->maybe_inject_wp_hooks($html_content, $page->ID);
-                    echo $html_content;
-                    exit;
-                }
+            if ($page && $this->is_html_page($page->ID)) {
+                $this->serve_html_page($page); // exits on render/gate; returns only if no content
             }
-
-            // Page not found
-            status_header(404);
-            echo '<!DOCTYPE html><html><head><title>Page Not Found</title></head><body><h1>404 - Page Not Found</h1></body></html>';
-            exit;
+            $this->send_not_found();
         }
 
         // Handle native WordPress page URLs
@@ -1596,19 +2194,404 @@ class HTML_To_WordPress_Page {
         }
 
         $post_id = get_the_ID();
-
-        if (!$post_id) {
+        if (!$post_id || !$this->is_html_page($post_id)) {
             return;
         }
 
-        $enabled = get_post_meta($post_id, self::META_KEY_ENABLED, true);
-        $html_content = get_post_meta($post_id, self::META_KEY_CONTENT, true);
-
-        if ($enabled === '1' && !empty($html_content)) {
-            $html_content = $this->maybe_inject_wp_hooks($html_content, $post_id);
-            echo $html_content;
-            exit;
+        $page = get_post($post_id);
+        if ($page) {
+            $this->serve_html_page($page);
         }
+    }
+
+    /**
+     * Core access gate. Decides who may see a plugin page and how.
+     * Exits on any terminal outcome (render / 404 / passcode form).
+     */
+    private function serve_html_page($page) {
+        $post_id = $page->ID;
+        $html_content = get_post_meta($post_id, self::META_KEY_CONTENT, true);
+        if (empty($html_content)) {
+            return; // no content — let WP continue / caller handles 404
+        }
+
+        $visibility = $this->get_visibility($post_id);
+
+        // TOP PRIORITY: plugin pages are NEVER indexable. Always signal crawlers to stay out.
+        // noai/noimageai are honoured by some AI crawlers; harmless to the rest.
+        if (!headers_sent()) {
+            header('X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex, noai, noimageai', true);
+            // The share token lives in the query string. Without this, any external asset
+            // the page loads would leak ?hpk=<token> to a third party via the Referer header.
+            header('Referrer-Policy: no-referrer', true);
+        }
+
+        // Logged-in admins always preview, regardless of visibility.
+        if (is_user_logged_in() && current_user_can('manage_options')) {
+            $this->output_html($html_content, $post_id);
+        }
+
+        // Public: everyone with the URL may view (still noindex + sitemap-excluded).
+        if ($visibility === 'public') {
+            $this->output_html($html_content, $post_id);
+        }
+
+        // Internal: admins only (handled above) — everyone else gets a clean 404.
+        if ($visibility === 'internal') {
+            $this->send_not_found();
+        }
+
+        // ---- Private ----
+        $protection = $this->get_protection($post_id); // 'token' | 'password'
+
+        // PASSWORD mode: gate lives at the canonical URL, no token needed.
+        if ($protection === 'password') {
+            if (!get_post_meta($post_id, self::META_KEY_PASSCODE, true)) {
+                // Password mode but no password set yet — locked to admins only.
+                $this->send_not_found();
+            }
+            $this->ensure_passcode($page, ''); // returns true (cookie/POST ok) or renders form + exits
+            $this->output_html($html_content, $post_id);
+        }
+
+        // TOKEN mode: require a valid share token or an existing access cookie.
+        $links = $this->get_share_links($post_id);
+        $token = isset($_GET['hpk']) ? sanitize_text_field(wp_unslash($_GET['hpk'])) : '';
+
+        // 1) Returning visitor with a valid signed access cookie.
+        $cookie_name = $this->access_cookie_name($post_id);
+        if (isset($_COOKIE[$cookie_name])) {
+            $cookie_val = (string) wp_unslash($_COOKIE[$cookie_name]);
+            foreach ($links as $l) {
+                if (!empty($l['revoked'])) continue;
+                if (!empty($l['expires']) && time() > (int) $l['expires']) continue;
+                if (hash_equals($this->access_cookie_value($post_id, $l['token']), $cookie_val)) {
+                    $this->output_html($html_content, $post_id);
+                }
+            }
+        }
+
+        // 2) Fresh token in the URL.
+        if ($token !== '') {
+            $idx = $this->find_valid_link($links, $token);
+            if ($idx >= 0) {
+                $this->grant_access($post_id, $links[$idx]['token']);
+                $links[$idx]['views'] = (int) $links[$idx]['views'] + 1;
+                $this->save_share_links($post_id, $links);
+                $this->log_view($post_id, $links[$idx]);
+                $this->output_html($html_content, $post_id);
+            }
+            // Expired / revoked / over view cap falls through to the same plain 404 below —
+            // a uniform response never reveals that a page exists here.
+        }
+
+        // No valid access: always a plain 404 (de-indexes just as well as 410, leaks nothing).
+        $this->send_not_found();
+    }
+
+    /** Render the HTML (with wp hooks + unconditional noindex meta) and stop. */
+    private function output_html($html_content, $post_id) {
+        $html_content = $this->maybe_inject_wp_hooks($html_content, $post_id);
+        $html_content = $this->inject_noindex_meta($html_content);
+        nocache_headers();
+        echo $html_content;
+        exit;
+    }
+
+    /** Insert robots + referrer meta into the document head (mirrors the HTTP headers). */
+    private function inject_noindex_meta($html) {
+        $meta = '<meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">' . "\n"
+              . '<meta name="referrer" content="no-referrer">' . "\n";
+        $pos = stripos($html, '<head>');
+        if ($pos !== false) {
+            return substr_replace($html, "\n" . $meta, $pos + 6, 0);
+        }
+        $pos = stripos($html, '</head>');
+        if ($pos !== false) {
+            return substr_replace($html, $meta, $pos, 0);
+        }
+        return $meta . $html; // no <head> — prepend
+    }
+
+    /** Generic 404 that does not confirm a page exists (enumeration resistance). */
+    private function send_not_found() {
+        status_header(404);
+        nocache_headers();
+        header('X-Robots-Tag: noindex, nofollow, noarchive', true);
+        echo '<!DOCTYPE html><html><head><meta name="robots" content="noindex, nofollow"><title>Page Not Found</title></head><body><h1>404 &ndash; Page Not Found</h1></body></html>';
+        exit;
+    }
+
+    /** Set the signed access cookie granting entry to a private page. */
+    private function grant_access($post_id, $token) {
+        $this->set_secure_cookie(
+            $this->access_cookie_name($post_id),
+            $this->access_cookie_value($post_id, $token),
+            self::ACCESS_TTL
+        );
+    }
+
+    /** Hardened cookie setter (HttpOnly, Secure when TLS, SameSite=Lax). */
+    private function set_secure_cookie($name, $value, $ttl) {
+        if (headers_sent()) return;
+        setcookie($name, $value, array(
+            'expires'  => time() + $ttl,
+            'path'     => defined('COOKIEPATH') && COOKIEPATH ? COOKIEPATH : '/',
+            'secure'   => is_ssl(),
+            'httponly' => true,
+            'samesite' => 'Lax',
+        ));
+        $_COOKIE[$name] = $value;
+    }
+
+    /* ---- Passcode gate ---- */
+
+    private function passcode_cookie_name($post_id) {
+        return 'html_page_pc_' . $post_id;
+    }
+
+    private function passcode_satisfied($post_id) {
+        $hash = get_post_meta($post_id, self::META_KEY_PASSCODE, true);
+        if (!$hash) return true; // no passcode configured
+        $name = $this->passcode_cookie_name($post_id);
+        if (!isset($_COOKIE[$name])) return false;
+        $expected = hash_hmac('sha256', $post_id . '|' . $hash, wp_salt('auth'));
+        return hash_equals($expected, (string) wp_unslash($_COOKIE[$name]));
+    }
+
+    private function set_passcode_satisfied($post_id) {
+        $hash = get_post_meta($post_id, self::META_KEY_PASSCODE, true);
+        $this->set_secure_cookie(
+            $this->passcode_cookie_name($post_id),
+            hash_hmac('sha256', $post_id . '|' . $hash, wp_salt('auth')),
+            self::ACCESS_TTL
+        );
+    }
+
+    private function pw_attempts_key($post_id) {
+        $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : 'x';
+        return 'html_pc_try_' . $post_id . '_' . md5($ip);
+    }
+    private function pw_is_locked($post_id) {
+        return ((int) get_transient($this->pw_attempts_key($post_id))) >= self::MAX_PW_TRIES;
+    }
+    private function pw_register_fail($post_id) {
+        $key = $this->pw_attempts_key($post_id);
+        set_transient($key, ((int) get_transient($key)) + 1, self::PW_LOCK_TTL);
+    }
+    private function pw_clear($post_id) {
+        delete_transient($this->pw_attempts_key($post_id));
+    }
+
+    /** Ensure the passcode is satisfied; otherwise render the form and exit. */
+    private function ensure_passcode($page, $token) {
+        $post_id = $page->ID;
+        if ($this->passcode_satisfied($post_id)) {
+            return true;
+        }
+
+        $error = '';
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['html_pc'])) {
+            if ($this->pw_is_locked($post_id)) {
+                $error = 'Too many attempts. Please try again later.';
+            } else {
+                $input = (string) wp_unslash($_POST['html_pc']);
+                $hash  = get_post_meta($post_id, self::META_KEY_PASSCODE, true);
+                if ($hash && wp_check_password($input, $hash)) {
+                    $this->pw_clear($post_id);
+                    $this->set_passcode_satisfied($post_id);
+                    return true;
+                }
+                $this->pw_register_fail($post_id);
+                $error = 'Incorrect password.';
+            }
+        }
+        $this->render_passcode_form($page, $token, $error); // exits
+    }
+
+    /** Minimal standalone password gate (with show/hide toggle). */
+    private function render_passcode_form($page, $token, $error = '') {
+        status_header(401);
+        nocache_headers();
+        header('X-Robots-Tag: noindex, nofollow, noarchive', true);
+        // Password mode posts back to the canonical URL; token mode keeps the token.
+        $action = esc_url($token !== '' ? $this->share_url_for_token($page, $token) : $this->share_base_url($page));
+        $title  = esc_html(get_bloginfo('name'));
+        $err    = $error ? '<p class="hp-gate-err">' . esc_html($error) . '</p>' : '';
+        echo '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+            . '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            . '<meta name="robots" content="noindex, nofollow, noarchive, nosnippet">'
+            . '<title>Protected</title><style>'
+            . 'body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f0f0f1;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1d2327}'
+            . '.hp-gate{background:#fff;padding:40px 36px;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,.08);width:340px;max-width:92vw;text-align:center}'
+            . '.hp-gate h1{font-size:18px;margin:0 0 6px}.hp-gate p{color:#646970;font-size:13px;margin:0 0 22px}'
+            . '.hp-gate-field{position:relative;margin-bottom:16px}'
+            . '.hp-gate input[type=password],.hp-gate input[type=text]{width:100%;box-sizing:border-box;padding:11px 40px 11px 12px;border:1px solid #c3c4c7;border-radius:8px;font-size:14px}'
+            . '.hp-gate input:focus{border-color:#2271b1;outline:2px solid rgba(34,113,177,.25)}'
+            . '.hp-gate-eye{position:absolute;top:50%;right:8px;transform:translateY(-50%);background:none;border:0;cursor:pointer;padding:6px;color:#646970;line-height:0}'
+            . '.hp-gate button[type=submit]{width:100%;padding:11px;border:0;border-radius:8px;background:#2271b1;color:#fff;font-size:14px;font-weight:600;cursor:pointer}'
+            . '.hp-gate button[type=submit]:hover{background:#135e96}'
+            . '.hp-gate-err{color:#d63638!important;font-size:13px;margin:-8px 0 14px!important}'
+            . '</style></head><body><form class="hp-gate" method="post" action="' . $action . '">'
+            . '<h1>' . $title . '</h1><p>This page is protected. Enter the password to continue.</p>'
+            . $err
+            . '<div class="hp-gate-field"><input type="password" name="html_pc" id="html_pc" autocomplete="current-password" autofocus required>'
+            . '<button type="button" class="hp-gate-eye" tabindex="-1" onclick="var i=document.getElementById(\'html_pc\');i.type=i.type===\'password\'?\'text\':\'password\'">'
+            . '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'
+            . '</button></div>'
+            . '<button type="submit">Unlock</button></form></body></html>';
+        exit;
+    }
+
+    /** Append a capped view event to the page's access log. */
+    private function log_view($post_id, $link) {
+        $log = get_post_meta($post_id, self::META_KEY_ACCESS_LOG, true);
+        if (!is_array($log)) $log = array();
+        $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '';
+        $log[] = array(
+            'time'  => time(),
+            'link'  => isset($link['id']) ? $link['id'] : '',
+            'label' => isset($link['label']) ? $link['label'] : '',
+            'ip'    => ($ip && function_exists('wp_privacy_anonymize_ip')) ? wp_privacy_anonymize_ip($ip) : '',
+            'ua'    => isset($_SERVER['HTTP_USER_AGENT'])
+                ? substr(sanitize_text_field(wp_unslash($_SERVER['HTTP_USER_AGENT'])), 0, 180) : '',
+        );
+        if (count($log) > self::LOG_CAP) {
+            $log = array_slice($log, -self::LOG_CAP);
+        }
+        update_post_meta($post_id, self::META_KEY_ACCESS_LOG, $log);
+    }
+
+    /* ===================================================================
+     * Discoverability suppression — keep confidential pages out of crawls
+     * =================================================================== */
+
+    /**
+     * IDs of every plugin page — ALL of them are hidden from crawlers/sitemaps/REST.
+     * (Plugin pages are never indexable, by design.) Cached per-request.
+     */
+    private function get_hidden_page_ids() {
+        static $ids = null;
+        if ($ids !== null) {
+            return $ids;
+        }
+        $ids = array_map('intval', get_posts(array(
+            'post_type'      => 'page',
+            'post_status'    => 'publish',
+            'posts_per_page' => -1,
+            'fields'         => 'ids',
+            'meta_query'     => array(array(
+                'key'     => self::META_KEY_ENABLED,
+                'value'   => '1',
+                'compare' => '=',
+            )),
+            'suppress_filters' => true,
+        )));
+        return $ids;
+    }
+
+    /** Force noindex on the front-end robots meta for every plugin page. */
+    public function filter_wp_robots($robots) {
+        if (is_singular('page')) {
+            $id = get_queried_object_id();
+            if ($id && $this->is_html_page($id)) {
+                $robots['noindex']   = true;
+                $robots['nofollow']  = true;
+                $robots['noarchive'] = true;
+            }
+        }
+        return $robots;
+    }
+
+    /** Exclude hidden pages from the WP core sitemap. */
+    public function filter_core_sitemap_args($args, $post_type) {
+        if ($post_type === 'page') {
+            $hidden = $this->get_hidden_page_ids();
+            if (!empty($hidden)) {
+                $existing = isset($args['post__not_in']) ? (array) $args['post__not_in'] : array();
+                $args['post__not_in'] = array_merge($existing, $hidden);
+            }
+        }
+        return $args;
+    }
+
+    /** Yoast (per-post) sitemap exclusion. */
+    public function filter_yoast_sitemap_exclude($excluded, $post_id) {
+        return in_array((int) $post_id, $this->get_hidden_page_ids(), true) ? true : $excluded;
+    }
+
+    /** Yoast (bulk id list) sitemap exclusion. */
+    public function filter_yoast_exclude_ids($ids) {
+        $ids = is_array($ids) ? $ids : array();
+        return array_values(array_unique(array_merge($ids, $this->get_hidden_page_ids())));
+    }
+
+    /** Rank Math sitemap exclusion. */
+    public function filter_rankmath_sitemap_exclude($exclude, $post_id) {
+        return in_array((int) $post_id, $this->get_hidden_page_ids(), true) ? true : $exclude;
+    }
+
+    /** Remove hidden pages from native search results and feeds. */
+    public function exclude_from_search_and_feed($query) {
+        if (is_admin() || !$query->is_main_query()) {
+            return;
+        }
+        if ($query->is_search() || $query->is_feed()) {
+            $hidden = $this->get_hidden_page_ids();
+            if (!empty($hidden)) {
+                $existing = (array) $query->get('post__not_in');
+                $query->set('post__not_in', array_merge($existing, $hidden));
+            }
+        }
+    }
+
+    /** Hide plugin pages from public REST *collections* (/wp-json/wp/v2/pages). */
+    public function filter_rest_page_query($args, $request) {
+        if (current_user_can('edit_pages')) {
+            return $args; // authenticated editors keep full access
+        }
+        $hidden = $this->get_hidden_page_ids();
+        if (!empty($hidden)) {
+            $existing = isset($args['post__not_in']) ? (array) $args['post__not_in'] : array();
+            $args['post__not_in'] = array_merge($existing, $hidden);
+        }
+        return $args;
+    }
+
+    /**
+     * Block single-item REST reads (/wp-json/wp/v2/pages/<id>).
+     * Core only applies rest_page_query to collections, so a direct ID fetch
+     * would otherwise leak the title, slug and permalink of a private page.
+     */
+    public function filter_rest_prepare_page($response, $post, $request) {
+        if (!$post || !$this->is_html_page($post->ID)) {
+            return $response;
+        }
+        if (current_user_can('edit_pages')) {
+            return $response;
+        }
+        return new WP_Error('rest_post_invalid_id', 'Invalid post ID.', array('status' => 404));
+    }
+
+    /** Keep plugin pages out of the REST search endpoint (/wp-json/wp/v2/search). */
+    public function filter_rest_search_query($args, $request) {
+        if (current_user_can('edit_pages')) {
+            return $args;
+        }
+        $hidden = $this->get_hidden_page_ids();
+        if (!empty($hidden)) {
+            $existing = isset($args['post__not_in']) ? (array) $args['post__not_in'] : array();
+            $args['post__not_in'] = array_merge($existing, $hidden);
+        }
+        return $args;
+    }
+
+    /** No oEmbed payload (title/author) for plugin pages — empty data makes core 404. */
+    public function filter_oembed_response($data, $post) {
+        if ($post && $this->is_html_page($post->ID)) {
+            return array();
+        }
+        return $data;
     }
 
     /**
@@ -1661,7 +2644,7 @@ class HTML_To_WordPress_Page {
                     'html-to-wp-page-admin',
                     plugin_dir_url(__FILE__) . 'admin-style.css',
                     array(),
-                    '2.11.0'
+                    self::VERSION
                 );
                 return;
             }
@@ -1676,14 +2659,14 @@ class HTML_To_WordPress_Page {
             'html-to-wp-page-admin',
             plugin_dir_url(__FILE__) . 'admin-style.css',
             array(),
-            '2.11.0'
+            self::VERSION
         );
 
         wp_enqueue_script(
             'html-to-wp-page-admin',
             plugin_dir_url(__FILE__) . 'admin-script.js',
             array('jquery'),
-            '2.11.0',
+            self::VERSION,
             true
         );
 

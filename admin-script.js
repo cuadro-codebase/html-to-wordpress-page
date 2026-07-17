@@ -45,6 +45,11 @@
                     bv = ($(b).attr('data-folder-sort') || '').toString();
                     return av.localeCompare(bv);
                 }
+                if (key === 'visibility') {
+                    av = ($(a).attr('data-visibility') || '').toString();
+                    bv = ($(b).attr('data-visibility') || '').toString();
+                    return av.localeCompare(bv);
+                }
                 if (key === 'created') {
                     av = parseInt($(a).attr('data-created') || '0', 10);
                     bv = parseInt($(b).attr('data-created') || '0', 10);
@@ -124,7 +129,7 @@
         }
 
         // Persistent filter state (applied only when user clicks Apply).
-        var activeFilters = { date_from: '', date_to: '', author: 0, pinned: '' };
+        var activeFilters = { date_from: '', date_to: '', author: 0, pinned: '', visibility: '' };
 
         function activeFilterCount() {
             var n = 0;
@@ -132,6 +137,7 @@
             if (activeFilters.date_to) n++;
             if (parseInt(activeFilters.author, 10) > 0) n++;
             if (activeFilters.pinned) n++;
+            if (activeFilters.visibility) n++;
             return n;
         }
 
@@ -147,7 +153,8 @@
                 date_from: activeFilters.date_from,
                 date_to: activeFilters.date_to,
                 author: activeFilters.author,
-                pinned: activeFilters.pinned
+                pinned: activeFilters.pinned,
+                visibility: activeFilters.visibility
             }, function(res) {
                 $spinner.removeClass('is-active');
                 if (!res.success) return;
@@ -161,7 +168,7 @@
                 }
 
                 if (count === 0) {
-                    tbody.html('<tr><td colspan="7">' + (term === '' ? 'No HTML pages in this view.' : 'No pages matching &ldquo;' + $('<span>').text(term).html() + '&rdquo;') + '</td></tr>');
+                    tbody.html('<tr><td colspan="8">' + (term === '' ? 'No HTML pages in this view.' : 'No pages matching &ldquo;' + $('<span>').text(term).html() + '&rdquo;') + '</td></tr>');
                 } else {
                     tbody.html(data.rows_html);
                     applyCurrentSort();
@@ -684,6 +691,7 @@
             $modalConfirm.toggleClass('button-danger', !!config.confirmDanger);
             $modalConfirm.prop('disabled', false).removeClass('is-loading');
             $modalConfirm.toggle(config.showConfirm !== false);
+            $modal.toggleClass('is-wide', !!config.wide);
             $modalBackdrop.css('display', 'flex');
         }
 
@@ -696,10 +704,18 @@
             modalActiveConfig = null;
         }
 
-        $modalCancel.add($modalClose).on('click', function() { closeModal(); });
-        $modalBackdrop.on('click', function(e) { if (e.target === this) closeModal(); });
+        // Dismiss without confirming — fires the optional onCancel callback first.
+        function cancelModal() {
+            if (modalActiveConfig && typeof modalActiveConfig.onCancel === 'function') {
+                modalActiveConfig.onCancel();
+            }
+            closeModal();
+        }
+
+        $modalCancel.add($modalClose).on('click', function() { cancelModal(); });
+        $modalBackdrop.on('click', function(e) { if (e.target === this) cancelModal(); });
         $(document).on('keydown', function(e) {
-            if (e.key === 'Escape' && $modalBackdrop.is(':visible')) closeModal();
+            if (e.key === 'Escape' && $modalBackdrop.is(':visible')) cancelModal();
             if (e.key === 'Enter' && $modalBackdrop.is(':visible') && !$(e.target).is('textarea')) {
                 if ($modalConfirm.is(':visible') && !$modalConfirm.prop('disabled')) $modalConfirm.trigger('click');
             }
@@ -948,6 +964,338 @@
             });
         }
 
+        // Visibility (bulk)
+        $('#html-bulk-private').on('click', function() {
+            bulkVisibility('private', $(this));
+        });
+        $('#html-bulk-public').on('click', function() {
+            var n = selectedIds.size;
+            if (n === 0) return;
+            var $btn = $(this);
+            openModal({
+                title: 'Make ' + n + ' page' + (n === 1 ? '' : 's') + ' public',
+                bodyHtml: '<p class="html-modal-message">Anyone with the URL will be able to view ' + (n === 1 ? 'this page' : 'these pages') + '. ' +
+                    'They stay hidden from search engines unless you also enable indexing per page.</p>',
+                confirmLabel: 'Make public',
+                onConfirm: function(done) {
+                    $.post(htmlPageAdmin.ajaxUrl, {
+                        action: 'html_page_bulk_visibility',
+                        nonce: htmlPageAdmin.nonce,
+                        ids: selectedIdArray(),
+                        visibility: 'public'
+                    }, function(res) {
+                        if (!res || !res.success) { done(false, (res && res.data) ? res.data : 'Failed'); return; }
+                        triggerSearch($.trim(searchInput.val() || ''));
+                        done(true);
+                    }).fail(function() { done(false, 'Network error'); });
+                }
+            });
+        });
+
+        function bulkVisibility(vis, $btn) {
+            if (selectedIds.size === 0) return;
+            setBulkBtnLoading($btn, true);
+            $.post(htmlPageAdmin.ajaxUrl, {
+                action: 'html_page_bulk_visibility',
+                nonce: htmlPageAdmin.nonce,
+                ids: selectedIdArray(),
+                visibility: vis
+            }, function(res) {
+                setBulkBtnLoading($btn, false);
+                if (!res || !res.success) { alert((res && res.data) ? res.data : 'Failed'); return; }
+                triggerSearch($.trim(searchInput.val() || ''));
+            }).fail(function() {
+                setBulkBtnLoading($btn, false);
+                alert('Network error.');
+            });
+        }
+
+        // ── Per-row Private/Public toggle ──
+
+        var ICO_LOCK_SM  = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7.5a4 4 0 0 1 8 0V11"/></svg>';
+        var ICO_GLOBE_SM = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18"/></svg>';
+
+        // Single source of truth for painting a row's visibility state.
+        function setRowVisibility(id, vis) {
+            var $row = table.find('tr[data-id="' + id + '"]');
+            if (!$row.length) return;
+            var isPublic = (vis === 'public');
+            $row.attr('data-visibility', vis);
+            var $sw = $row.find('.html-vis-switch');
+            $sw.toggleClass('is-public', isPublic);
+            $sw.find('.html-vis-toggle').prop('checked', isPublic);
+            $sw.find('.html-vis-ico').html(isPublic ? ICO_GLOBE_SM : ICO_LOCK_SM);
+            $sw.find('.html-vis-text').text(isPublic ? 'Public' : 'Private');
+            $sw.attr('data-tooltip', isPublic
+                ? 'Public — anyone with the URL can view (never indexed by Google)'
+                : 'Private — only people you share with can view');
+        }
+
+        table.on('change', '.html-vis-toggle', function() {
+            var $t = $(this);
+            var $label = $t.closest('.html-vis-switch');
+            var id = parseInt($t.attr('data-id'), 10);
+            var makePublic = this.checked;
+
+            var send = function() {
+                $label.addClass('is-loading');
+                $t.prop('disabled', true);
+                $.post(htmlPageAdmin.ajaxUrl, {
+                    action: 'html_page_set_visibility',
+                    nonce: htmlPageAdmin.nonce,
+                    id: id,
+                    visibility: makePublic ? 'public' : 'private'
+                }, function(res) {
+                    $label.removeClass('is-loading');
+                    $t.prop('disabled', false);
+                    if (!res || !res.success) {
+                        $t.prop('checked', !makePublic); // revert
+                        alert((res && res.data) ? res.data : 'Failed');
+                        return;
+                    }
+                    var vis = (res.data && res.data.visibility) ? res.data.visibility : (makePublic ? 'public' : 'private');
+                    setRowVisibility(id, vis);
+                }).fail(function() {
+                    $label.removeClass('is-loading');
+                    $t.prop('disabled', false);
+                    $t.prop('checked', !makePublic);
+                    alert('Network error.');
+                });
+            };
+
+            if (makePublic) {
+                openModal({
+                    title: 'Make this page public?',
+                    bodyHtml: '<p class="html-modal-message">Anyone with the URL will be able to view this page (no password, no login). It is still <strong>never</strong> indexed by Google.</p>',
+                    confirmLabel: 'Make public',
+                    onConfirm: function(done) { send(); done(true); },
+                    onCancel: function() { $t.prop('checked', false); }
+                });
+            } else {
+                send();
+            }
+        });
+
+        // ── Per-row Share modal (Password Protection / Tokenized Link) ──
+        table.on('click', '.html-share-btn', function() {
+            var id = parseInt($(this).attr('data-id'), 10);
+            openShareModal(id);
+        });
+
+        function copyText(text, $btn, okLabel) {
+            var orig = $btn.text();
+            var done = function() {
+                $btn.text(okLabel || 'Copied!').addClass('is-copied');
+                setTimeout(function() { $btn.text(orig).removeClass('is-copied'); }, 1300);
+            };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(done, function() { window.prompt('Copy:', text); });
+            } else {
+                var $tmp = $('<textarea>').val(text).appendTo('body').select();
+                try { document.execCommand('copy'); done(); } catch (e) { window.prompt('Copy:', text); }
+                $tmp.remove();
+            }
+        }
+
+        var ICON_LOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+        var ICON_LINK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
+        var ICON_ARROW = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>';
+
+        function openShareModal(id) {
+            openModal({
+                title: 'Share page',
+                showConfirm: false,
+                wide: true,
+                bodyHtml:
+                    '<p class="html-share-lead">Pick how this page is unlocked. Both keep it private and out of search engines.</p>' +
+                    '<div class="html-share-choices">' +
+                        '<button type="button" class="html-share-choice" data-method="password">' +
+                            '<span class="html-share-choice-ico">' + ICON_LOCK + '</span>' +
+                            '<span class="html-share-choice-body">' +
+                                '<span class="html-share-choice-t">Password Protection</span>' +
+                                '<span class="html-share-choice-d">Send the page URL plus a password</span>' +
+                            '</span>' +
+                            '<span class="html-share-choice-go">' + ICON_ARROW + '</span>' +
+                        '</button>' +
+                        '<button type="button" class="html-share-choice" data-method="token">' +
+                            '<span class="html-share-choice-ico">' + ICON_LINK + '</span>' +
+                            '<span class="html-share-choice-body">' +
+                                '<span class="html-share-choice-t">Tokenized Link</span>' +
+                                '<span class="html-share-choice-d">Send one secret link, no password</span>' +
+                            '</span>' +
+                            '<span class="html-share-choice-go">' + ICON_ARROW + '</span>' +
+                        '</button>' +
+                    '</div>' +
+                    '<div class="html-share-result" style="display:none;"></div>'
+            });
+
+            var $body = $('#html-modal-body');
+
+            // Step 1 — pick a method. Password generates now; token asks for a window first.
+            $body.on('click', '.html-share-choice', function() {
+                var method = $(this).attr('data-method');
+                if (method === 'token') {
+                    showExpiryStep();
+                } else {
+                    doShare('password', {});
+                }
+            });
+
+            // Local "YYYY-MM-DDTHH:MM" for the datetime-local min/default.
+            function localDT(d) {
+                var p = function(n) { return String(n).padStart(2, '0'); };
+                return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+                       'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+            }
+
+            function showExpiryStep() {
+                var now = new Date();
+                var soon = new Date(now.getTime() + 7 * 86400000);
+                $body.find('.html-share-choices').slideUp(120);
+                $body.find('.html-share-expiry').remove();
+                $('<div class="html-share-expiry">' +
+                    '<div class="html-exp-head">' +
+                        '<button type="button" class="html-exp-back">&larr; Back</button>' +
+                        '<span class="html-exp-title">How long should the link work?</span>' +
+                    '</div>' +
+                    '<label class="html-exp-opt">' +
+                        '<input type="radio" name="hp_exp" value="never" checked>' +
+                        '<span class="html-exp-l">Never expires</span>' +
+                    '</label>' +
+                    '<label class="html-exp-opt">' +
+                        '<input type="radio" name="hp_exp" value="in">' +
+                        '<span class="html-exp-l">Expires in</span>' +
+                        '<span class="html-exp-ctl">' +
+                            '<input type="number" class="html-exp-amt" value="7" min="1" max="999">' +
+                            '<select class="html-exp-unit">' +
+                                '<option value="minutes">minutes</option>' +
+                                '<option value="hours">hours</option>' +
+                                '<option value="days" selected>days</option>' +
+                            '</select>' +
+                        '</span>' +
+                    '</label>' +
+                    '<label class="html-exp-opt">' +
+                        '<input type="radio" name="hp_exp" value="at">' +
+                        '<span class="html-exp-l">Expires on</span>' +
+                        '<span class="html-exp-ctl">' +
+                            '<input type="datetime-local" class="html-exp-at" min="' + localDT(now) + '" value="' + localDT(soon) + '">' +
+                        '</span>' +
+                    '</label>' +
+                    '<button type="button" class="button button-primary html-exp-go">' +
+                        '<span class="html-exp-go-label">Generate link</span>' +
+                        '<span class="html-exp-go-spinner" aria-hidden="true"></span>' +
+                    '</button>' +
+                  '</div>').insertBefore($body.find('.html-share-result')).hide().slideDown(120);
+            }
+
+            $body.on('click', '.html-exp-back', function() {
+                $body.find('.html-share-expiry').slideUp(120, function() { $(this).remove(); });
+                $body.find('.html-share-choices').slideDown(120);
+            });
+
+            // Selecting a control implies its radio.
+            $body.on('focus input change', '.html-exp-amt, .html-exp-unit', function() {
+                $body.find('input[name="hp_exp"][value="in"]').prop('checked', true);
+            });
+            $body.on('focus input change', '.html-exp-at', function() {
+                $body.find('input[name="hp_exp"][value="at"]').prop('checked', true);
+            });
+
+            $body.on('click', '.html-exp-go', function() {
+                var mode = $body.find('input[name="hp_exp"]:checked').val() || 'never';
+                var extra = { exp_mode: mode };
+                if (mode === 'in') {
+                    var amt = parseInt($body.find('.html-exp-amt').val(), 10);
+                    if (!amt || amt < 1) { alert('Enter how long the link should last.'); return; }
+                    extra.exp_amount = amt;
+                    extra.exp_unit = $body.find('.html-exp-unit').val();
+                } else if (mode === 'at') {
+                    var at = $body.find('.html-exp-at').val();
+                    if (!at) { alert('Pick a date and time.'); return; }
+                    extra.exp_at = at;
+                }
+                var $btn = $(this).addClass('is-loading').prop('disabled', true);
+                doShare('token', extra, function() {
+                    $btn.removeClass('is-loading').prop('disabled', false);
+                });
+            });
+
+            function doShare(method, extra, always) {
+                var $choices = $body.find('.html-share-choices');
+                var $result = $body.find('.html-share-result');
+                $choices.addClass('is-loading');
+                $.post(htmlPageAdmin.ajaxUrl, $.extend({
+                    action: 'html_page_setup_share',
+                    nonce: htmlPageAdmin.nonce,
+                    id: id,
+                    method: method
+                }, extra), function(res) {
+                    $choices.removeClass('is-loading');
+                    if (always) always();
+                    if (!res || !res.success) { alert((res && res.data) ? res.data : 'Failed'); return; }
+                    $choices.slideUp(120);
+                    $body.find('.html-share-expiry').slideUp(120, function() { $(this).remove(); });
+                    $result.html(buildResult(res.data)).slideDown(120);
+                }).fail(function() {
+                    $choices.removeClass('is-loading');
+                    if (always) always();
+                    alert('Network error.');
+                });
+            }
+
+            function buildResult(d) {
+                // Sharing gates the page — reflect that on the row toggle immediately.
+                var flipped = false;
+                if (d.visibility) {
+                    var $row = table.find('tr[data-id="' + id + '"]');
+                    flipped = ($row.attr('data-visibility') !== d.visibility);
+                    setRowVisibility(id, d.visibility);
+                }
+
+                var html = flipped
+                    ? '<p class="html-share-flipped">' +
+                        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>' +
+                        '<span>Switched to <strong>Private</strong> so the protection applies.</span>' +
+                      '</p>'
+                    : '';
+
+                if (d.method === 'password') {
+                    html +=
+                        '<div class="html-share-field">' +
+                            '<label>Page URL</label>' +
+                            '<div class="html-share-copyrow"><input type="text" readonly value="' + esc(d.url) + '"><button type="button" class="html-copybtn html-copy-url">Copy</button></div>' +
+                        '</div>' +
+                        '<div class="html-share-field is-secret">' +
+                            '<label>Password</label>' +
+                            '<div class="html-share-copyrow"><input type="text" readonly class="html-share-pass" value="' + esc(d.password) + '"><button type="button" class="html-copybtn is-primary html-copy-pass">Copy</button></div>' +
+                        '</div>' +
+                        '<p class="html-share-tipline">Send these on <strong>different channels</strong> &mdash; URL by email, password by text.</p>';
+                } else {
+                    html +=
+                        '<div class="html-share-field is-secret">' +
+                            '<label>Tokenized link</label>' +
+                            '<div class="html-share-copyrow"><input type="text" readonly value="' + esc(d.url) + '"><button type="button" class="html-copybtn is-primary html-copy-url">Copy</button></div>' +
+                        '</div>' +
+                        '<p class="html-share-expline">' +
+                            (d.expires
+                                ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>' +
+                                  '<span>Works until <strong>' + esc(d.expires_display) + '</strong>, then stops opening.</span>'
+                                : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>' +
+                                  '<span>Never expires &mdash; revoke it from the page editor to cut access.</span>') +
+                        '</p>' +
+                        '<p class="html-share-tipline">Anyone with this link can view the page. Treat it like a password.</p>';
+                }
+                return html;
+            }
+
+            $body.on('click', '.html-copy-url', function() {
+                copyText($(this).closest('.html-share-copyrow').find('input').val(), $(this));
+            });
+            $body.on('click', '.html-copy-pass', function() {
+                copyText($(this).closest('.html-share-copyrow').find('input').val(), $(this));
+            });
+        }
+
         // Delete (bulk)
         $('#html-bulk-delete').on('click', function() {
             if (selectedIds.size === 0) return;
@@ -1031,6 +1379,7 @@
         var $fDateTo = $('#html-filter-date-to');
         var $fAuthor = $('#html-filter-author');
         var $fPinned = $('#html-filter-pinned');
+        var $fVisibility = $('#html-filter-visibility');
         var $fApply = $('#html-filter-apply');
         var $fClear = $('#html-filter-clear');
 
@@ -1050,6 +1399,7 @@
             $fDateTo.val(activeFilters.date_to || '');
             $fAuthor.val(String(activeFilters.author || 0));
             $fPinned.val(activeFilters.pinned || '');
+            $fVisibility.val(activeFilters.visibility || '');
         }
 
         $filterToggle.on('click', function(e) {
@@ -1078,6 +1428,7 @@
             activeFilters.date_to = dt;
             activeFilters.author = parseInt($fAuthor.val() || 0, 10);
             activeFilters.pinned = $fPinned.val() || '';
+            activeFilters.visibility = $fVisibility.val() || '';
             refreshFilterBadge();
             $fApply.addClass('is-loading').prop('disabled', true);
             var xhr = triggerSearch($.trim(searchInput.val() || ''));
@@ -1093,7 +1444,7 @@
         });
 
         $fClear.on('click', function() {
-            activeFilters = { date_from: '', date_to: '', author: 0, pinned: '' };
+            activeFilters = { date_from: '', date_to: '', author: 0, pinned: '', visibility: '' };
             setPanelInputsFromActive();
             refreshFilterBadge();
             triggerSearch($.trim(searchInput.val() || ''));
@@ -1398,6 +1749,171 @@
                 this.selectionStart = this.selectionEnd = start + 2;
             }
         });
+
+        // ── Sharing & Access panel (edit screen) ──
+        var $sharePanel = $('#html-share-panel');
+        if ($sharePanel.length && window.htmlShareState) {
+            var shareId = parseInt($sharePanel.attr('data-id'), 10);
+            var state = window.htmlShareState;
+
+            function fmtDate(ts) {
+                if (!ts) return '';
+                try { return new Date(ts * 1000).toLocaleDateString(); } catch (e) { return ''; }
+            }
+
+            function sharePost(action, extra, cb) {
+                var data = $.extend({ action: action, nonce: htmlPageAdmin.nonce, id: shareId }, extra || {});
+                return $.post(htmlPageAdmin.ajaxUrl, data, function(res) {
+                    if (res && res.success) {
+                        state = res.data;
+                        renderShare();
+                    }
+                    if (cb) cb(res);
+                }).fail(function() { if (cb) cb(null); });
+            }
+
+            function renderShare() {
+                // Visibility radios
+                $sharePanel.find('input[name="hp_vis"]').each(function() {
+                    this.checked = ($(this).val() === state.visibility);
+                });
+                // Protection section only relevant for private
+                $('#html-share-protection').toggle(state.visibility === 'private');
+                $sharePanel.find('input[name="hp_prot"]').each(function() {
+                    this.checked = ($(this).val() === state.protection);
+                });
+                // Passcode field shown only in password mode; links only in token mode.
+                $('#html-share-passcode').toggle(state.visibility === 'private' && state.protection === 'password');
+                $('#html-share-links-section').toggle(state.visibility === 'private' && state.protection === 'token');
+                $('#hp_passcode_status').text(state.has_passcode ? 'Password is set' : 'No password set')
+                    .toggleClass('is-set', !!state.has_passcode);
+
+                // Badge
+                var badge = $('#html-share-badge');
+                var bmap = {
+                    private:  ['Private', 'is-private'],
+                    internal: ['Internal', 'is-internal'],
+                    public:   ['Public', 'is-public']
+                };
+                var b = bmap[state.visibility] || bmap.private;
+                badge.text(b[0]).attr('class', 'html-share-badge ' + b[1]);
+
+                renderLinks();
+            }
+
+            function renderLinks() {
+                var $list = $('#hp-links-list').empty();
+                if (!state.links || !state.links.length) {
+                    $list.append('<p class="html-share-empty">No active links. Create one to share this page.</p>');
+                    return;
+                }
+                state.links.forEach(function(l) {
+                    var meta = [];
+                    if (l.label) meta.push(esc(l.label));
+                    meta.push(l.views + ' view' + (l.views === 1 ? '' : 's'));
+                    if (l.expires) meta.push(l.expired ? '<span class="html-link-expired">Expired ' + esc(fmtDate(l.expires)) + '</span>' : 'Expires ' + esc(fmtDate(l.expires)));
+                    var $row = $(
+                        '<div class="html-share-link">' +
+                            '<div class="html-share-link-main">' +
+                                '<input type="text" readonly class="html-share-link-url" value="' + esc(l.url) + '">' +
+                                '<button type="button" class="button html-share-copy" data-tooltip="Copy link">Copy</button>' +
+                                '<button type="button" class="button html-share-revoke" data-tooltip="Revoke this link">Revoke</button>' +
+                            '</div>' +
+                            '<div class="html-share-link-meta">' + meta.join(' &middot; ') + '</div>' +
+                        '</div>'
+                    );
+                    $row.data('linkId', l.id);
+                    $list.append($row);
+                });
+            }
+
+            // Visibility change
+            $sharePanel.on('change', 'input[name="hp_vis"]', function() {
+                var vis = $(this).val();
+                if (vis === 'public') {
+                    openModal({
+                        title: 'Make this page public',
+                        bodyHtml: '<p class="html-modal-message">Anyone with the URL will be able to view this page (no login, no password). It is still never indexed by search engines.</p>',
+                        confirmLabel: 'Make public',
+                        onConfirm: function(done) { sharePost('html_page_set_visibility', { visibility: 'public' }); done(true); },
+                        onCancel: function() { renderShare(); }
+                    });
+                } else {
+                    sharePost('html_page_set_visibility', { visibility: vis });
+                }
+            });
+
+            // Protection change
+            $sharePanel.on('change', 'input[name="hp_prot"]', function() {
+                sharePost('html_page_set_protection', { protection: $(this).val() });
+            });
+
+            // Passcode eye toggle
+            $('.html-share-eye').on('click', function() {
+                var $i = $('#hp_passcode');
+                $i.attr('type', $i.attr('type') === 'password' ? 'text' : 'password');
+            });
+
+            // Save passcode
+            $('#hp_passcode_save').on('click', function() {
+                var $btn = $(this);
+                $btn.addClass('is-loading').prop('disabled', true);
+                sharePost('html_page_set_passcode', { passcode: $('#hp_passcode').val() || '' }, function() {
+                    $btn.removeClass('is-loading').prop('disabled', false);
+                    $('#hp_passcode').val('');
+                });
+            });
+
+            // Create link
+            $('#hp_add_link').on('click', function() {
+                var $btn = $(this);
+                $btn.addClass('is-loading').prop('disabled', true);
+                sharePost('html_page_create_link', {
+                    label: $('#hp_link_label').val() || '',
+                    expires_days: $('#hp_link_expiry').val() || '0'
+                }, function() {
+                    $btn.removeClass('is-loading').prop('disabled', false);
+                    $('#hp_link_label').val('');
+                });
+            });
+
+            // Copy link
+            $sharePanel.on('click', '.html-share-copy', function() {
+                var $btn = $(this);
+                var url = $btn.closest('.html-share-link').find('.html-share-link-url').val();
+                var done = function() {
+                    var t = $btn.text();
+                    $btn.text('Copied!').addClass('is-copied');
+                    setTimeout(function() { $btn.text(t).removeClass('is-copied'); }, 1200);
+                };
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(url).then(done, function() {
+                        prompt('Copy this link:', url);
+                    });
+                } else {
+                    var $u = $btn.closest('.html-share-link').find('.html-share-link-url');
+                    $u.trigger('select'); document.execCommand('copy'); done();
+                }
+            });
+
+            // Revoke link
+            $sharePanel.on('click', '.html-share-revoke', function() {
+                var linkId = $(this).closest('.html-share-link').data('linkId');
+                openModal({
+                    title: 'Revoke link',
+                    bodyHtml: '<p class="html-modal-message">Anyone using this link will lose access immediately. This cannot be undone.</p>',
+                    confirmLabel: 'Revoke',
+                    confirmDanger: true,
+                    onConfirm: function(done) {
+                        sharePost('html_page_revoke_link', { link_id: linkId }, function(res) {
+                            done(!!(res && res.success), (res && res.data) ? res.data : 'Failed');
+                        });
+                    }
+                });
+            });
+
+            renderShare();
+        }
 
     });
 
