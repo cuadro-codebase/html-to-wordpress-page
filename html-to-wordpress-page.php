@@ -2,7 +2,7 @@
 /**
  * Plugin Name: HTML to WordPress Page
  * Description: Create standalone HTML pages without WordPress theme header/footer. Perfect for uploading AI-generated HTML.
- * Version: 3.1.1
+ * Version: 3.1.2
  * Author: Cuadro Studio
  * Author URI: https://www.cuadrostudio.com
  * License: GPL v2 or later
@@ -29,10 +29,10 @@ class HTML_To_WordPress_Page {
     const META_KEY_ALLOW_INDEX = '_html_page_allow_index';  // '1' only when a public page may be indexed
     const META_KEY_PROTECTION  = '_html_page_protection';   // 'token' | 'password' (legacy: link/link_password)
     const META_KEY_SHARE_LINKS = '_html_page_share_links';  // array of link records (see new_share_link)
-    const META_KEY_PASSCODE    = '_html_page_passcode';     // hashed passcode (wp_hash_password)
+    const META_KEY_PASSCODE    = '_html_page_passcode';     // encrypted (reversible) share password; legacy: bcrypt
     const META_KEY_ACCESS_LOG  = '_html_page_access_log';   // capped list of recent view events
 
-    const VERSION       = '3.1.1';
+    const VERSION       = '3.1.2';
     const COOKIE_PREFIX = 'html_page_access_';   // per-page access cookie
     const ACCESS_TTL    = 43200;                 // access cookie / session lifetime (12h)
     const MAX_PW_TRIES  = 8;                      // passcode attempts before cooldown
@@ -1674,11 +1674,26 @@ class HTML_To_WordPress_Page {
 
         if ($method === 'password') {
             update_post_meta($id, self::META_KEY_PROTECTION, 'password');
-            $password = $this->generate_readable_password();
-            update_post_meta($id, self::META_KEY_PASSCODE, wp_hash_password($password));
+
+            $regenerate = isset($_POST['regenerate']) && $_POST['regenerate'] === '1';
+            $existing   = $this->decrypt_secret(get_post_meta($id, self::META_KEY_PASSCODE, true));
+
+            // Re-opening Share shows the SAME password so links already sent keep
+            // working. Only an explicit "Generate new" (or an unrecoverable legacy
+            // hash) mints a fresh one.
+            if (!$regenerate && $existing !== null) {
+                $password = $existing;
+                $reused   = true;
+            } else {
+                $password = $this->generate_readable_password();
+                update_post_meta($id, self::META_KEY_PASSCODE, $this->encrypt_secret($password));
+                $reused   = false;
+            }
+
             wp_send_json_success(array(
                 'method'     => 'password',
                 'password'   => $password,
+                'reused'     => $reused,
                 'url'        => $this->share_base_url($post),
                 'visibility' => $visibility,
             ));
@@ -1768,6 +1783,53 @@ class HTML_To_WordPress_Page {
         return $pick($adj) . '-' . $pick($noun) . '-' . random_int(10, 99) . '-' . $pick($noun);
     }
 
+    /*
+     * Share passwords are stored REVERSIBLY, not one-way hashed.
+     * Rationale: the page HTML already lives in plaintext postmeta right beside
+     * this value, so a DB leak exposes the content regardless — hashing the
+     * password added no protection while making it impossible to re-show the
+     * admin the password they already set (forcing a regenerate that breaks
+     * every link already sent). Encrypt at rest with the site's auth salt so a
+     * casual dump isn't plaintext, and keep it recoverable for re-display.
+     */
+    private function encrypt_secret($plain) {
+        if (function_exists('openssl_encrypt')) {
+            $key = hash('sha256', wp_salt('auth'), true);
+            $iv  = random_bytes(16);
+            $ct  = openssl_encrypt($plain, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
+            if ($ct !== false) {
+                return 'enc:' . base64_encode($iv . $ct);
+            }
+        }
+        return 'plain:' . $plain; // openssl unavailable — content is plaintext anyway
+    }
+
+    /** Recover a stored share password. Returns null for the legacy bcrypt format. */
+    private function decrypt_secret($stored) {
+        if (!is_string($stored) || $stored === '') return null;
+        if (strpos($stored, 'plain:') === 0) return substr($stored, 6);
+        if (strpos($stored, 'enc:') === 0) {
+            if (!function_exists('openssl_decrypt')) return null;
+            $raw = base64_decode(substr($stored, 4), true);
+            if ($raw === false || strlen($raw) < 17) return null;
+            $iv  = substr($raw, 0, 16);
+            $ct  = substr($raw, 16);
+            $key = hash('sha256', wp_salt('auth'), true);
+            $pt  = openssl_decrypt($ct, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
+            return $pt === false ? null : $pt;
+        }
+        return null; // legacy wp_hash_password() bcrypt — one-way, cannot recover
+    }
+
+    /** Verify a submitted passcode against the stored value (reversible or legacy). */
+    private function verify_passcode($stored, $input) {
+        $plain = $this->decrypt_secret($stored);
+        if ($plain !== null) {
+            return hash_equals($plain, (string) $input);
+        }
+        return $stored && wp_check_password($input, $stored); // legacy bcrypt
+    }
+
     /** Return the most recent active (non-revoked, non-expired) link, creating one if none. */
     private function get_or_create_active_link($post_id) {
         $links = $this->get_share_links($post_id);
@@ -1793,7 +1855,7 @@ class HTML_To_WordPress_Page {
             delete_post_meta($id, self::META_KEY_PASSCODE);
         } else {
             if (strlen($pc) > 200) $pc = substr($pc, 0, 200);
-            update_post_meta($id, self::META_KEY_PASSCODE, wp_hash_password($pc));
+            update_post_meta($id, self::META_KEY_PASSCODE, $this->encrypt_secret($pc));
         }
         wp_send_json_success($this->get_share_state(get_post($id)));
     }
@@ -2443,9 +2505,9 @@ class HTML_To_WordPress_Page {
             if ($this->pw_is_locked($post_id)) {
                 $error = 'Too many attempts. Please try again later.';
             } else {
-                $input = (string) wp_unslash($_POST['html_pc']);
-                $hash  = get_post_meta($post_id, self::META_KEY_PASSCODE, true);
-                if ($hash && wp_check_password($input, $hash)) {
+                $input  = (string) wp_unslash($_POST['html_pc']);
+                $stored = get_post_meta($post_id, self::META_KEY_PASSCODE, true);
+                if ($this->verify_passcode($stored, $input)) {
                     $this->pw_clear($post_id);
                     $this->set_passcode_satisfied($post_id);
                     return true;

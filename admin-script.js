@@ -1268,10 +1268,14 @@
                             '<div class="html-share-copyrow"><input type="text" readonly value="' + esc(d.url) + '"><button type="button" class="html-copybtn html-copy-url">Copy</button></div>' +
                         '</div>' +
                         '<div class="html-share-field is-secret">' +
-                            '<label>Password</label>' +
+                            '<label>Password' + (d.reused ? ' <span class="html-share-hint">existing &mdash; same as before</span>' : '') + '</label>' +
                             '<div class="html-share-copyrow"><input type="text" readonly class="html-share-pass" value="' + esc(d.password) + '"><button type="button" class="html-copybtn is-primary html-copy-pass">Copy</button></div>' +
                         '</div>' +
-                        '<p class="html-share-tipline">Send these on <strong>different channels</strong> &mdash; URL by email, password by text.</p>';
+                        '<p class="html-share-tipline">Send these on <strong>different channels</strong> &mdash; URL by email, password by text.</p>' +
+                        '<button type="button" class="html-share-regen">' +
+                            '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>' +
+                            'Generate a new password' +
+                        '</button>';
                 } else {
                     html +=
                         '<div class="html-share-field is-secret">' +
@@ -1295,6 +1299,12 @@
             });
             $body.on('click', '.html-copy-pass', function() {
                 copyText($(this).closest('.html-share-copyrow').find('input').val(), $(this));
+            });
+
+            // Explicit rotation — only this mints a new password (and breaks the old).
+            $body.on('click', '.html-share-regen', function() {
+                if (!window.confirm('Generate a new password? The current one stops working, so anyone you already sent it to will need the new password.')) return;
+                doShare('password', { regenerate: '1' });
             });
         }
 

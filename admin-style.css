@@ -2153,3 +2153,22 @@
     color: var(--hp-ink-mute);
     line-height: 1.5;
 }
+
+/* Rotate password — quiet, deliberately not a primary button */
+.html-share-regen {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 14px;
+    padding: 7px 12px;
+    background: none;
+    border: 1px solid var(--hp-line);
+    border-radius: 8px;
+    color: var(--hp-ink-soft);
+    font-size: 12.5px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: border-color .16s var(--hp-ease), color .16s var(--hp-ease), background .16s var(--hp-ease);
+}
+.html-share-regen:hover { border-color: var(--hp-amber-ln); color: var(--hp-amber); background: var(--hp-amber-bg); }
+.html-share-regen svg { flex: 0 0 auto; }
