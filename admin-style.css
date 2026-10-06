@@ -1743,6 +1743,13 @@
 .html-vis-switch.is-loading .html-vis-ico,
 .html-vis-switch.is-loading .html-vis-text { opacity: .45; }
 
+/* Google (index) opt-in: stacked under the visibility switch, Public rows only */
+.html-idx-switch { display: flex; width: max-content; margin-top: 2px; }
+#html-pages-table tr:not([data-visibility="public"]) .html-idx-switch { display: none; }
+.html-idx-switch.is-indexed .html-vis-slider { background: #2e9e5b; }
+.html-idx-switch.is-indexed .html-vis-slider::after { transform: translateX(14px); }
+.html-idx-switch.is-indexed .html-vis-text { color: #1f7a45; }
+
 /* ---- Actions cell: one labeled primary + compact icon buttons ----
    These cells hold fixed-size controls, so they get px widths in the <th>
    (see the table markup) plus a hard min-width floor here. A % width on a

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: HTML to WordPress Page
  * Description: Create standalone HTML pages without WordPress theme header/footer. Perfect for uploading AI-generated HTML.
- * Version: 3.1.2
+ * Version: 3.2.0
  * Author: Cuadro Studio
  * Author URI: https://www.cuadrostudio.com
  * License: GPL v2 or later
@@ -32,7 +32,7 @@ class HTML_To_WordPress_Page {
     const META_KEY_PASSCODE    = '_html_page_passcode';     // encrypted (reversible) share password; legacy: bcrypt
     const META_KEY_ACCESS_LOG  = '_html_page_access_log';   // capped list of recent view events
 
-    const VERSION       = '3.1.2';
+    const VERSION       = '3.2.0';
     const COOKIE_PREFIX = 'html_page_access_';   // per-page access cookie
     const ACCESS_TTL    = 43200;                 // access cookie / session lifetime (12h)
     const MAX_PW_TRIES  = 8;                      // passcode attempts before cooldown
@@ -98,6 +98,10 @@ class HTML_To_WordPress_Page {
         add_action('wp_ajax_html_page_get_share', array($this, 'ajax_get_share'));
         add_action('wp_ajax_html_page_setup_share', array($this, 'ajax_setup_share'));
         add_action('wp_ajax_html_page_bulk_visibility', array($this, 'ajax_bulk_visibility'));
+        add_action('wp_ajax_html_page_set_index', array($this, 'ajax_set_index'));
+        // Leaving Public always drops the Google opt-in (covers single, bulk and share flows).
+        add_action('added_post_meta', array($this, 'clear_index_when_not_public'), 10, 4);
+        add_action('updated_post_meta', array($this, 'clear_index_when_not_public'), 10, 4);
 
         // Discoverability suppression — keep confidential pages out of every crawl surface
         add_filter('wp_robots', array($this, 'filter_wp_robots'));
@@ -124,6 +128,15 @@ class HTML_To_WordPress_Page {
             return $v;
         }
         return 'private';
+    }
+
+    /**
+     * Indexable = Public AND explicitly opted in. Everything else stays noindex,
+     * so private/internal client pages can never leak into Google.
+     */
+    private function is_indexable($post_id) {
+        return $this->get_visibility($post_id) === 'public'
+            && get_post_meta($post_id, self::META_KEY_ALLOW_INDEX, true) === '1';
     }
 
     /**
@@ -967,6 +980,7 @@ class HTML_To_WordPress_Page {
         // Visibility (Private is the safe default). Public = ON toggle.
         $visibility = $this->get_visibility($page->ID);
         $is_public  = ($visibility === 'public');
+        $is_indexed = $this->is_indexable($page->ID);
 
         ob_start();
         ?>
@@ -995,11 +1009,17 @@ class HTML_To_WordPress_Page {
                 <a href="<?php echo esc_url($url); ?>" target="_blank" title="<?php echo esc_attr($url); ?>"><?php echo esc_html($url); ?></a>
             </td>
             <td class="html-visibility-cell">
-                <label class="html-vis-switch<?php echo $is_public ? ' is-public' : ''; ?>" data-tooltip="<?php echo esc_attr($is_public ? 'Public — anyone with the URL can view (never indexed by Google)' : 'Private — only people you share with can view'); ?>">
+                <label class="html-vis-switch<?php echo $is_public ? ' is-public' : ''; ?>" data-tooltip="<?php echo esc_attr($is_public ? 'Public — anyone with the URL can view (not in Google unless Google is on)' : 'Private — only people you share with can view'); ?>">
                     <input type="checkbox" class="html-vis-toggle" data-id="<?php echo intval($page->ID); ?>" <?php checked($is_public); ?>>
                     <span class="html-vis-slider" aria-hidden="true"></span>
                     <span class="html-vis-ico" aria-hidden="true"><?php echo self::vis_icon($is_public); ?></span>
                     <span class="html-vis-text"><?php echo $is_public ? 'Public' : 'Private'; ?></span>
+                    <span class="html-vis-spin" aria-hidden="true"></span>
+                </label>
+                <label class="html-vis-switch html-idx-switch<?php echo $is_indexed ? ' is-indexed' : ''; ?>" data-tooltip="<?php echo esc_attr($is_indexed ? 'Indexed — Google may list this page' : 'Hidden from Google — turn on to let Google index this page'); ?>">
+                    <input type="checkbox" class="html-idx-toggle" data-id="<?php echo intval($page->ID); ?>" <?php checked($is_indexed); ?>>
+                    <span class="html-vis-slider" aria-hidden="true"></span>
+                    <span class="html-vis-text">Google</span>
                     <span class="html-vis-spin" aria-hidden="true"></span>
                 </label>
             </td>
@@ -1616,6 +1636,7 @@ class HTML_To_WordPress_Page {
         return array(
             'id'           => $post_id,
             'visibility'   => $this->get_visibility($post_id),
+            'indexable'    => $this->is_indexable($post_id),
             'protection'   => $this->get_protection($post_id),
             'has_passcode' => (bool) get_post_meta($post_id, self::META_KEY_PASSCODE, true),
             'base_url'     => $this->share_base_url($post),
@@ -1641,6 +1662,29 @@ class HTML_To_WordPress_Page {
         if (!in_array($vis, array('private', 'public', 'internal'), true)) $vis = 'private';
         update_post_meta($id, self::META_KEY_VISIBILITY, $vis);
         wp_send_json_success($this->get_share_state(get_post($id)));
+    }
+
+    /** Opt a Public page in/out of Google indexing. Refused for non-public pages. */
+    public function ajax_set_index() {
+        check_ajax_referer('html_page_search_nonce', 'nonce');
+        if (!current_user_can('manage_options')) wp_send_json_error('Unauthorized');
+        $id = $this->valid_html_page_id(isset($_POST['id']) ? $_POST['id'] : 0);
+        if (!$id) wp_send_json_error('Invalid page');
+
+        $on = !empty($_POST['indexable']) && $_POST['indexable'] !== '0';
+        if ($on) {
+            if ($this->get_visibility($id) !== 'public') wp_send_json_error('Only Public pages can be indexed.');
+            update_post_meta($id, self::META_KEY_ALLOW_INDEX, '1');
+        } else {
+            delete_post_meta($id, self::META_KEY_ALLOW_INDEX);
+        }
+        wp_send_json_success($this->get_share_state(get_post($id)));
+    }
+
+    public function clear_index_when_not_public($meta_id, $post_id, $meta_key, $meta_value) {
+        if ($meta_key === self::META_KEY_VISIBILITY && $meta_value !== 'public') {
+            delete_post_meta($post_id, self::META_KEY_ALLOW_INDEX);
+        }
     }
 
     public function ajax_set_protection() {
@@ -2287,10 +2331,12 @@ class HTML_To_WordPress_Page {
 
         $visibility = $this->get_visibility($post_id);
 
-        // TOP PRIORITY: plugin pages are NEVER indexable. Always signal crawlers to stay out.
+        // TOP PRIORITY: plugin pages are noindex unless Public AND opted in ("Google" toggle).
         // noai/noimageai are honoured by some AI crawlers; harmless to the rest.
         if (!headers_sent()) {
-            header('X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex, noai, noimageai', true);
+            if (!$this->is_indexable($post_id)) {
+                header('X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex, noai, noimageai', true);
+            }
             // The share token lives in the query string. Without this, any external asset
             // the page loads would leak ?hpk=<token> to a third party via the Referer header.
             header('Referrer-Policy: no-referrer', true);
@@ -2301,7 +2347,7 @@ class HTML_To_WordPress_Page {
             $this->output_html($html_content, $post_id);
         }
 
-        // Public: everyone with the URL may view (still noindex + sitemap-excluded).
+        // Public: everyone with the URL may view (noindex + sitemap-excluded unless opted in).
         if ($visibility === 'public') {
             $this->output_html($html_content, $post_id);
         }
@@ -2359,10 +2405,12 @@ class HTML_To_WordPress_Page {
         $this->send_not_found();
     }
 
-    /** Render the HTML (with wp hooks + unconditional noindex meta) and stop. */
+    /** Render the HTML (with wp hooks + noindex meta unless indexable) and stop. */
     private function output_html($html_content, $post_id) {
         $html_content = $this->maybe_inject_wp_hooks($html_content, $post_id);
-        $html_content = $this->inject_noindex_meta($html_content);
+        if (!$this->is_indexable($post_id)) {
+            $html_content = $this->inject_noindex_meta($html_content);
+        }
         nocache_headers();
         echo $html_content;
         exit;
@@ -2577,8 +2625,8 @@ class HTML_To_WordPress_Page {
      * =================================================================== */
 
     /**
-     * IDs of every plugin page — ALL of them are hidden from crawlers/sitemaps/REST.
-     * (Plugin pages are never indexable, by design.) Cached per-request.
+     * IDs of every plugin page hidden from crawlers/sitemaps/REST — all of them
+     * except Public pages explicitly opted in to indexing. Cached per-request.
      */
     private function get_hidden_page_ids() {
         static $ids = null;
@@ -2597,14 +2645,17 @@ class HTML_To_WordPress_Page {
             )),
             'suppress_filters' => true,
         )));
+        $ids = array_values(array_filter($ids, function ($id) {
+            return !$this->is_indexable($id);
+        }));
         return $ids;
     }
 
-    /** Force noindex on the front-end robots meta for every plugin page. */
+    /** Force noindex on the front-end robots meta for every non-indexable plugin page. */
     public function filter_wp_robots($robots) {
         if (is_singular('page')) {
             $id = get_queried_object_id();
-            if ($id && $this->is_html_page($id)) {
+            if ($id && $this->is_html_page($id) && !$this->is_indexable($id)) {
                 $robots['noindex']   = true;
                 $robots['nofollow']  = true;
                 $robots['noarchive'] = true;

@@ -1029,9 +1029,63 @@
             $sw.find('.html-vis-ico').html(isPublic ? ICO_GLOBE_SM : ICO_LOCK_SM);
             $sw.find('.html-vis-text').text(isPublic ? 'Public' : 'Private');
             $sw.attr('data-tooltip', isPublic
-                ? 'Public — anyone with the URL can view (never indexed by Google)'
+                ? 'Public — anyone with the URL can view (not in Google unless Google is on)'
                 : 'Private — only people you share with can view');
+            if (!isPublic) setRowIndexed(id, false); // server drops the opt-in when leaving Public
         }
+
+        function setRowIndexed(id, on) {
+            var $sw = table.find('tr[data-id="' + id + '"] .html-idx-switch');
+            $sw.toggleClass('is-indexed', on);
+            $sw.find('.html-idx-toggle').prop('checked', on);
+            $sw.attr('data-tooltip', on
+                ? 'Indexed — Google may list this page'
+                : 'Hidden from Google — turn on to let Google index this page');
+        }
+
+        table.on('change', '.html-idx-toggle', function() {
+            var $t = $(this);
+            var $label = $t.closest('.html-idx-switch');
+            var id = parseInt($t.attr('data-id'), 10);
+            var turnOn = this.checked;
+
+            var send = function() {
+                $label.addClass('is-loading');
+                $t.prop('disabled', true);
+                $.post(htmlPageAdmin.ajaxUrl, {
+                    action: 'html_page_set_index',
+                    nonce: htmlPageAdmin.nonce,
+                    id: id,
+                    indexable: turnOn ? '1' : '0'
+                }, function(res) {
+                    $label.removeClass('is-loading');
+                    $t.prop('disabled', false);
+                    if (!res || !res.success) {
+                        $t.prop('checked', !turnOn);
+                        alert((res && res.data) ? res.data : 'Failed');
+                        return;
+                    }
+                    setRowIndexed(id, !!(res.data && res.data.indexable));
+                }).fail(function() {
+                    $label.removeClass('is-loading');
+                    $t.prop('disabled', false);
+                    $t.prop('checked', !turnOn);
+                    alert('Network error.');
+                });
+            };
+
+            if (turnOn) {
+                openModal({
+                    title: 'Let Google index this page?',
+                    bodyHtml: '<p class="html-modal-message">Google will be allowed to list this page in search results and it will appear in the sitemap. Only do this for pages meant for the public, never for client documents.</p>',
+                    confirmLabel: 'Allow indexing',
+                    onConfirm: function(done) { send(); done(true); },
+                    onCancel: function() { $t.prop('checked', false); }
+                });
+            } else {
+                send();
+            }
+        });
 
         table.on('change', '.html-vis-toggle', function() {
             var $t = $(this);
